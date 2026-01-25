@@ -114,6 +114,11 @@ export class VoiceCallWebhookServer {
           });
         }
       },
+      onSpeechStart: (providerCallId) => {
+        if (this.provider.name === "twilio") {
+          (this.provider as TwilioProvider).clearTtsQueue(providerCallId);
+        }
+      },
       onPartialTranscript: (callId, partial) => {
         console.log(`[voice-call] Partial for ${callId}: ${partial}`);
       },

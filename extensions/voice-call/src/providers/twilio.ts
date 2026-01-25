@@ -534,7 +534,6 @@ export class TwilioProvider implements VoiceCallProvider {
     await handler.queueTts(streamSid, async (signal) => {
       // Generate audio with core TTS (returns mu-law at 8kHz)
       const muLawAudio = await ttsProvider.synthesizeForTelephony(text);
-
       for (const chunk of chunkAudio(muLawAudio, CHUNK_SIZE)) {
         if (signal.aborted) break;
         handler.sendAudio(streamSid, chunk);

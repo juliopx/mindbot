@@ -1,8 +1,8 @@
-import { GraphService } from "./GraphService.js";
-import { getRelativeTimeDescription } from "../../utils/time-format.js";
 import { estimateTokens } from "@mariozechner/pi-coding-agent";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { getRelativeTimeDescription } from "../../utils/time-format.js";
+import { GraphService } from "./GraphService.js";
 import { buildStoryPrompt, type StoryPromptOptions } from "./story-prompt-builder.js";
 
 export class ConsolidationService {
@@ -566,6 +566,256 @@ ${newStory}
     }
 
     return currentStory;
+  }
+
+  /**
+   * Scans recent session files to recover any un-narrated messages from previous sessions.
+   * This implements the "Global Narrative Sync" strategy.
+   */
+  async syncGlobalNarrative(
+    sessionsDir: string,
+    storyPath: string,
+    agent: any,
+    identityContext?: string,
+    safeTokenLimit: number = 50000,
+  ): Promise<void> {
+    try {
+      this.log(`🌍 [MIND] Starting Global Narrative Sync (Limit: ${safeTokenLimit} tokens)...`);
+
+      // 1. Get Story Anchor Timestamp
+      let lastProcessed = 0;
+      try {
+        const currentStory = await fs.readFile(storyPath, "utf-8");
+        const match = currentStory.match(/<!-- LAST_PROCESSED: (.*?) -->/);
+        if (match && match[1]) {
+          const parsed = new Date(match[1]);
+          if (!isNaN(parsed.getTime())) {
+            lastProcessed = parsed.getTime();
+          }
+        }
+      } catch {
+        // New story, process everything
+      }
+
+      this.log(`   Detailed Anchor: ${new Date(lastProcessed).toISOString()}`);
+
+      // 2. Scan Recent Sessions
+      const files = await fs.readdir(sessionsDir).catch(() => []);
+      const jsonlFiles = files
+        .filter((f) => f.endsWith(".jsonl"))
+        .map((f) => path.join(sessionsDir, f));
+
+      // Sort by mtime descending (newest first) and take top 5
+      const recentFiles = (
+        await Promise.all(jsonlFiles.map(async (f) => ({ path: f, stat: await fs.stat(f) })))
+      )
+        .sort((a, b) => b.stat.mtime.getTime() - a.stat.mtime.getTime())
+        .slice(0, 5);
+
+      this.log(`   Scanning top ${recentFiles.length} files in ${sessionsDir}`);
+      for (const f of recentFiles)
+        this.log(`     - ${path.basename(f.path)} (${f.stat.mtime.toISOString()})`);
+
+      if (recentFiles.length === 0) return;
+
+      // 3. Collect ONE combined transcript of NEW messages
+      const allNewMessages: any[] = [];
+
+      for (const file of recentFiles) {
+        try {
+          const content = await fs.readFile(file.path, "utf-8");
+          const lines = content.split("\n");
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              const entry = JSON.parse(trimmed);
+              if (entry.type !== "message") continue;
+
+              let entryTs = entry.timestamp;
+              if (typeof entryTs === "string") entryTs = new Date(entryTs).getTime();
+              if (typeof entryTs !== "number" || isNaN(entryTs)) continue;
+
+              if (entryTs > lastProcessed) {
+                let text = entry.message?.text || "";
+                if (!text && Array.isArray(entry.message?.content)) {
+                  text = entry.message.content.find((c: any) => c.type === "text")?.text || "";
+                }
+                if (!text && typeof entry.message?.content === "string") {
+                  text = entry.message.content;
+                }
+
+                if (text && !this.isHeartbeatMessage(text)) {
+                  allNewMessages.push({
+                    timestamp: entryTs,
+                    role: entry.message?.role,
+                    text: text,
+                  });
+                }
+              }
+            } catch {}
+          }
+        } catch (e) {
+          this.log(`⚠️ [MIND] Failed to read session ${file.path}: ${e}`);
+        }
+      }
+
+      if (allNewMessages.length === 0) {
+        this.log(`✅ [MIND] Global Narrative is up to date.`);
+        return;
+      }
+
+      // 4. Sort Chronologically
+      allNewMessages.sort((a, b) => a.timestamp - b.timestamp);
+
+      // 5. Update Story (Chunked Strategy)
+      let currentStory = await fs.readFile(storyPath, "utf-8").catch(() => "");
+      let currentBatch: any[] = [];
+      let currentBatchTokens = 0;
+
+      for (let i = 0; i < allNewMessages.length; i++) {
+        const msg = allNewMessages[i];
+        const msgTokens = estimateTokens({
+          role: msg.role,
+          content: msg.text,
+          timestamp: 0,
+        });
+
+        // Trigger update if adding this message exceeds the safe limit
+        if (currentBatch.length > 0 && currentBatchTokens + msgTokens > safeTokenLimit) {
+          this.log(
+            `📦 [MIND] Sync Batch: ${currentBatch.length} messages (${currentBatchTokens} tokens). Updating Story...`,
+          );
+          currentStory = await this.updateNarrativeStory(
+            "global-sync-batch",
+            currentBatch,
+            currentStory,
+            storyPath,
+            agent,
+            identityContext,
+            currentBatch[currentBatch.length - 1].timestamp,
+          );
+          currentBatch = [];
+          currentBatchTokens = 0;
+        }
+
+        currentBatch.push(msg);
+        currentBatchTokens += msgTokens;
+      }
+
+      // Process final batch
+      if (currentBatch.length > 0) {
+        this.log(
+          `📦 [MIND] Final Sync Batch: ${currentBatch.length} messages (${currentBatchTokens} tokens).`,
+        );
+        await this.updateNarrativeStory(
+          "global-sync-final",
+          currentBatch,
+          currentStory,
+          storyPath,
+          agent,
+          identityContext,
+          currentBatch[currentBatch.length - 1].timestamp,
+        );
+      }
+    } catch (e: any) {
+      process.stderr.write(`❌ [MIND] Global Sync failed: ${e.message}\n`);
+    }
+  }
+
+  /**
+   * Syncs a specific active session's history to the story.
+   * Used during compaction or shutdown.
+   */
+  async syncStoryWithSession(
+    messages: any[],
+    storyPath: string,
+    agent: any,
+    identityContext?: string,
+    safeTokenLimit: number = 50000,
+  ): Promise<void> {
+    try {
+      // 1. Get Story Anchor
+      let lastProcessed = 0;
+      let currentStory = "";
+      try {
+        currentStory = await fs.readFile(storyPath, "utf-8");
+        const match = currentStory.match(/<!-- LAST_PROCESSED: (.*?) -->/);
+        if (match && match[1]) {
+          const parsed = new Date(match[1]);
+          if (!isNaN(parsed.getTime())) {
+            lastProcessed = parsed.getTime();
+          }
+        }
+      } catch {
+        // Story doesn't exist yet
+      }
+
+      // 2. Filter New Messages
+      const newMessages = messages.filter((m) => {
+        let ts = m.timestamp ?? m.created_at ?? 0;
+        if (typeof ts === "string") ts = new Date(ts).getTime();
+        if (ts <= lastProcessed) return false;
+        let text = m.text || "";
+        if (!text && Array.isArray(m.content)) {
+          text = m.content.find((c: any) => c.type === "text")?.text || "";
+        }
+        if (!text && typeof m.content === "string") {
+          text = m.content;
+        }
+        return text && !this.isHeartbeatMessage(text);
+      });
+
+      if (newMessages.length === 0) return;
+
+      this.log(
+        `📖 [MIND] Compaction Trigger: Syncing ${newMessages.length} new messages to story...`,
+      );
+
+      // 3. Update (Chunked Strategy)
+      const latestTs = newMessages[newMessages.length - 1].timestamp ?? Date.now();
+
+      let currentBatch: any[] = [];
+      let currentBatchTokens = 0;
+
+      for (const msg of newMessages) {
+        const msgTokens = estimateTokens({
+          role: msg.role,
+          content: msg.text || msg.content || "",
+          timestamp: 0,
+        });
+
+        if (currentBatch.length > 0 && currentBatchTokens + msgTokens > safeTokenLimit) {
+          currentStory = await this.updateNarrativeStory(
+            "active-session-batch",
+            currentBatch,
+            currentStory,
+            storyPath,
+            agent,
+            identityContext,
+            currentBatch[currentBatch.length - 1].timestamp ?? Date.now(),
+          );
+          currentBatch = [];
+          currentBatchTokens = 0;
+        }
+        currentBatch.push(msg);
+        currentBatchTokens += msgTokens;
+      }
+
+      if (currentBatch.length > 0) {
+        await this.updateNarrativeStory(
+          "active-session-final",
+          currentBatch,
+          currentStory,
+          storyPath,
+          agent,
+          identityContext,
+          latestTs,
+        );
+      }
+    } catch (e: any) {
+      process.stderr.write(`❌ [MIND] Session Sync failed: ${e.message}\n`);
+    }
   }
 
   /**

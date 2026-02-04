@@ -1,19 +1,24 @@
+import { streamSimple } from "@mariozechner/pi-ai";
+import { estimateTokens } from "@mariozechner/pi-coding-agent";
+import { SessionManager } from "@mariozechner/pi-coding-agent";
 import fs from "node:fs/promises";
+import path from "node:path";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
 import type { RunEmbeddedPiAgentParams } from "./run/params.js";
 import type { EmbeddedPiAgentMeta, EmbeddedPiRunResult } from "./types.js";
+import { type OpenClawConfig } from "../../config/types.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
+import { isSubagentSessionKey } from "../../routing/session-key.js";
 import { resolveUserPath } from "../../utils.js";
 import { isMarkdownCapableMessageChannel } from "../../utils/message-channel.js";
 import { resolveOpenClawAgentDir } from "../agent-paths.js";
-import path from "node:path";
+import { resolveSessionAgentId, resolveAgentConfig } from "../agent-scope.js";
 import {
   isProfileInCooldown,
   markAuthProfileFailure,
   markAuthProfileGood,
   markAuthProfileUsed,
 } from "../auth-profiles.js";
-import { type OpenClawConfig } from "../../config/types.js";
 import {
   CONTEXT_WINDOW_HARD_MIN_TOKENS,
   CONTEXT_WINDOW_WARN_BELOW_TOKENS,
@@ -45,25 +50,19 @@ import {
   pickFallbackThinkingLevel,
   type FailoverReason,
 } from "../pi-embedded-helpers.js";
+import { resolveCompactionReserveTokensFloor } from "../pi-settings.js";
 import { normalizeUsage, type UsageLike } from "../usage.js";
-import { resolveSessionAgentId, resolveAgentConfig } from "../agent-scope.js";
 import {
   loadWorkspaceBootstrapFiles,
   DEFAULT_IDENTITY_FILENAME,
   DEFAULT_SOUL_FILENAME,
 } from "../workspace.js";
-
-import { streamSimple } from "@mariozechner/pi-ai";
-import { estimateTokens } from "@mariozechner/pi-coding-agent";
-import { resolveCompactionReserveTokensFloor } from "../pi-settings.js";
-
 import { compactEmbeddedPiSessionDirect } from "./compact.js";
+import { limitHistoryTurns, getDmHistoryLimitFromSessionKey } from "./history.js";
 import { resolveGlobalLane, resolveSessionLane } from "./lanes.js";
 import { log } from "./logger.js";
 import { resolveModel } from "./model.js";
 import { runEmbeddedAttempt } from "./run/attempt.js";
-import { SessionManager } from "@mariozechner/pi-coding-agent";
-import { limitHistoryTurns, getDmHistoryLimitFromSessionKey } from "./history.js";
 import { buildEmbeddedRunPayloads } from "./run/payloads.js";
 import { describeUnknownError } from "./utils.js";
 
@@ -249,7 +248,8 @@ export async function runEmbeddedPiAgent(
 
         let runtimeApiKey = apiKeyInfo.apiKey;
         if (model.provider === "github-copilot" && apiKeyInfo.apiKey) {
-          const { resolveCopilotApiToken } = await import("../../providers/github-copilot-token.js");
+          const { resolveCopilotApiToken } =
+            await import("../../providers/github-copilot-token.js");
           const copilotToken = await resolveCopilotApiToken({
             githubToken: apiKeyInfo.apiKey,
           });
@@ -317,7 +317,8 @@ export async function runEmbeddedPiAgent(
         complete: async (prompt: string) => {
           let fullText = "";
           try {
-            const key = ((authStorage as any).getRuntimeApiKey?.(model.provider) || apiKeyInfo?.apiKey) as string;
+            const key = ((authStorage as any).getRuntimeApiKey?.(model.provider) ||
+              apiKeyInfo?.apiKey) as string;
             if (!key) return { text: "" };
             const stream = streamSimple(
               model,
@@ -355,8 +356,7 @@ export async function runEmbeddedPiAgent(
             }
             if (debug && fullText.length > 0) process.stderr.write("\n");
           } catch (e: any) {
-            if (debug)
-              process.stderr.write(`  ❌ [DEBUG] Subconscious LLM error: ${e.message}\n`);
+            if (debug) process.stderr.write(`  ❌ [DEBUG] Subconscious LLM error: ${e.message}\n`);
           }
           return { text: fullText };
         },
@@ -367,7 +367,7 @@ export async function runEmbeddedPiAgent(
         sessionKey: params.sessionKey,
         config: params.config as OpenClawConfig,
       });
-      const agentConfig = resolveAgentConfig(params.config as OpenClawConfig ?? {}, agentId);
+      const agentConfig = resolveAgentConfig((params.config as OpenClawConfig) ?? {}, agentId);
 
       // Resolve identity context for narrative updates
       let identityContext = "";
@@ -396,134 +396,141 @@ export async function runEmbeddedPiAgent(
       let finalExtraSystemPrompt = params.extraSystemPrompt ?? "";
       let narrativeStory: { content: string; updatedAt: Date } | null = null;
       const storyPath = path.join(resolvedWorkspace, "STORY.md");
-      const isMindEnabled =
-        mindConfig?.enabled && (mindConfig?.config?.narrative?.enabled ?? true);
+      const isMindEnabled = mindConfig?.enabled && (mindConfig?.config?.narrative?.enabled ?? true);
       const tokenThreshold = mindConfig?.config?.narrative?.tokenThreshold ?? 5000;
 
       // HEARTBEAT DETECTION (Incoming)
       const isHeartbeatPrompt =
-        params.prompt.includes("Read HEARTBEAT.md") &&
-        params.prompt.includes("reply HEARTBEAT_OK");
+        params.prompt.includes("Read HEARTBEAT.md") && params.prompt.includes("reply HEARTBEAT_OK");
 
       try {
         if (isMindEnabled) {
-          if (debug)
-            process.stderr.write(
-              `🧠 [MIND] Starting modular subconscious pipeline (Model: ${modelId})...\n`,
-            );
-
-          const { GraphService } = await import("../../services/memory/GraphService.js");
-          const { SubconsciousService } =
-            await import("../../services/memory/SubconsciousService.js");
-          const { ConsolidationService } =
-            await import("../../services/memory/ConsolidationService.js");
-
-          const gUrl = (mindConfig?.config as any)?.graphiti?.baseUrl || "http://localhost:8001";
-          const gs = new GraphService(gUrl, debug);
-          const sub = new SubconsciousService(gs, debug);
-          const cons = new ConsolidationService(gs, debug);
-          const globalSessionId = "global-user-memory";
-
-          if (!isHeartbeatPrompt) {
-            // 1. Storage & Consolidation (Only for real messages)
-            const memoryDir = path.join(path.dirname(storyPath), "memory");
-            const sessionMgr = SessionManager.open(params.sessionFile);
-            const sessionMessages = sessionMgr.buildSessionContext().messages || [];
-
-            // Bootstrap historical episodes
-            await cons.bootstrapHistoricalEpisodes(params.sessionId, memoryDir, sessionMessages);
-
-            // Consolidation Check
-            const contextInfo = resolveContextWindowInfo({
-              cfg: params.config as OpenClawConfig,
-              provider,
-              modelId,
-              defaultTokens: DEFAULT_CONTEXT_TOKENS,
-            });
-            const safeTokenLimit = Math.floor(contextInfo.tokens * 0.5);
-            await cons.checkAndConsolidate(
-              params.sessionId,
-              subconsciousAgent,
-              storyPath,
-              sessionMessages,
-              identityContext,
-              safeTokenLimit,
-              tokenThreshold,
-            );
-
-            // Persist User Message
+          // [MIND] Disable Mind for sub-agents (no observer, no storage)
+          if (isSubagentSessionKey(params.sessionKey)) {
             if (debug)
-              process.stderr.write(
-                `Tape [GRAPH] Storing episode for Global ID: ${globalSessionId} (Trace: ${params.sessionId})\n`,
-              );
-            await gs.addEpisode(globalSessionId, `human: ${params.prompt}`);
-            await cons.trackPendingEpisode(path.dirname(storyPath), `human: ${params.prompt}`);
+              process.stderr.write(`🧠 [MIND] Sub-agent detected - skipping Mind pipeline.\n`);
           } else {
             if (debug)
               process.stderr.write(
-                `💓 [MIND] Heartbeat detected - skipping memory storage & consolidation.\n`,
+                `🧠 [MIND] Starting modular subconscious pipeline (Model: ${modelId})...\n`,
               );
-          }
 
-          // 2. Fetch Narrative Story (ALWAYS, even for heartbeats)
-          try {
-            const storyContent = await fs.readFile(storyPath, "utf-8").catch(() => null);
-            if (storyContent) {
-              narrativeStory = { content: storyContent, updatedAt: new Date() };
+            const { GraphService } = await import("../../services/memory/GraphService.js");
+            const { SubconsciousService } =
+              await import("../../services/memory/SubconsciousService.js");
+            const { ConsolidationService } =
+              await import("../../services/memory/ConsolidationService.js");
+
+            const gUrl = (mindConfig?.config as any)?.graphiti?.baseUrl || "http://localhost:8001";
+            const gs = new GraphService(gUrl, debug);
+            const sub = new SubconsciousService(gs, debug);
+            const cons = new ConsolidationService(gs, debug);
+            const globalSessionId = "global-user-memory";
+
+            if (!isHeartbeatPrompt) {
+              // 1. Storage & Consolidation (Only for real messages)
+              const memoryDir = path.join(path.dirname(storyPath), "memory");
+              const sessionMgr = SessionManager.open(params.sessionFile);
+              const sessionMessages = sessionMgr.buildSessionContext().messages || [];
+
+              const safeTokenLimit = Math.floor((ctxInfo.tokens || 50000) * 0.5);
+
+              // Bootstrap historical episodes
+              await cons.bootstrapHistoricalEpisodes(params.sessionId, memoryDir, sessionMessages);
+
+              // GLOBAL NARRATIVE SYNC (Startup)
+              // Recover any un-narrated messages from previous sessions
+              const { resolveSessionTranscriptsDir } =
+                await import("../../config/sessions/paths.js");
+              const sessionsDir = resolveSessionTranscriptsDir();
+              await cons.syncGlobalNarrative(
+                sessionsDir,
+                storyPath,
+                subconsciousAgent,
+                identityContext,
+                safeTokenLimit,
+              );
+
+              // Persist User Message to Graphiti (Semantic Search)
               if (debug)
                 process.stderr.write(
-                  `📖 [MIND] Local Story retrieved (${storyContent.length} chars)\n`,
+                  `Tape [GRAPH] Storing episode for Global ID: ${globalSessionId} (Trace: ${params.sessionId})\n`,
+                );
+              await gs.addEpisode(globalSessionId, `human: ${params.prompt}`);
+
+              // NOTE: We no longer track pending episodes per turn or consolidate constantly.
+              // Narrative updates now happen via Global Sync (startup) or Compaction Sync.
+            } else {
+              if (debug)
+                process.stderr.write(
+                  `💓 [MIND] Heartbeat detected - skipping memory storage & consolidation.\n`,
                 );
             }
-          } catch (e: any) {
-            if (debug)
-              process.stderr.write(`⚠️ [MIND] Failed to read local story: ${e.message}\n`);
-          }
 
-          // 3. Get Flashbacks (Only for real messages)
-          if (!isHeartbeatPrompt) {
-            let oldestContextTimestamp: Date | undefined;
-            let rawHistory: any[] = [];
+            // 2. Fetch Narrative Story (ALWAYS, even for heartbeats)
             try {
-              const tempSessionManager = SessionManager.open(params.sessionFile);
-              const branch = tempSessionManager.getBranch();
-
-              rawHistory = branch
-                .filter((e) => e.type === "message")
-                .map((e: any) => ({
-                  role: (e.message as any)?.role,
-                  text: (e.message as any)?.text || (e.message as any)?.content,
-                  timestamp: e.timestamp,
-                }));
-
-              const contextMessages = tempSessionManager.buildSessionContext().messages || [];
-              if (contextMessages.length > 0) {
-                const limit = getDmHistoryLimitFromSessionKey(params.sessionKey, params.config as OpenClawConfig);
-                const limited = limitHistoryTurns(contextMessages, limit);
-                if (limited.length > 0 && (limited[0] as any).timestamp) {
-                  oldestContextTimestamp = new Date((limited[0] as any).timestamp);
-                }
+              const storyContent = await fs.readFile(storyPath, "utf-8").catch(() => null);
+              if (storyContent) {
+                narrativeStory = { content: storyContent, updatedAt: new Date() };
+                if (debug)
+                  process.stderr.write(
+                    `📖 [MIND] Local Story retrieved (${storyContent.length} chars)\n`,
+                  );
               }
-            } catch (e) { }
-
-            const flashbacks = await sub.getFlashback(
-              globalSessionId, // STRICTLY use global-user-memory
-              params.prompt,
-              subconsciousAgent,
-              oldestContextTimestamp,
-              rawHistory,
-            );
-
-            if (flashbacks) {
+            } catch (e: any) {
               if (debug)
-                process.stderr.write("✨ [MIND] Memories injected into system prompt.\n");
-              finalExtraSystemPrompt += flashbacks;
+                process.stderr.write(`⚠️ [MIND] Failed to read local story: ${e.message}\n`);
             }
-          } else {
-            if (debug)
-              process.stderr.write(
-                `💓 [MIND] Heartbeat detected - skipping resonance retrieval.\n`,
+
+            // 3. Get Flashbacks (Only for real messages)
+            if (!isHeartbeatPrompt) {
+              let oldestContextTimestamp: Date | undefined;
+              let rawHistory: any[] = [];
+              try {
+                const tempSessionManager = SessionManager.open(params.sessionFile);
+                const branch = tempSessionManager.getBranch();
+
+                rawHistory = branch
+                  .filter((e) => e.type === "message")
+                  .filter((e) => (e.message as any)?.role !== "system") // [MIND] Exclude system messages (compaction/summaries)
+                  .map((e: any) => ({
+                    role: (e.message as any)?.role,
+                    text: (e.message as any)?.text || (e.message as any)?.content,
+                    timestamp: e.timestamp,
+                  }));
+
+                const contextMessages = tempSessionManager.buildSessionContext().messages || [];
+                if (contextMessages.length > 0) {
+                  const limit = getDmHistoryLimitFromSessionKey(
+                    params.sessionKey,
+                    params.config as OpenClawConfig,
+                  );
+                  const limited = limitHistoryTurns(contextMessages, limit);
+                  if (limited.length > 0 && (limited[0] as any).timestamp) {
+                    oldestContextTimestamp = new Date((limited[0] as any).timestamp);
+                  }
+                }
+              } catch (e) {}
+
+              const flashbacks = await sub.getFlashback(
+                globalSessionId, // STRICTLY use global-user-memory
+                params.prompt,
+                subconsciousAgent,
+                oldestContextTimestamp,
+                rawHistory,
               );
+
+              if (flashbacks) {
+                if (debug)
+                  process.stderr.write("✨ [MIND] Memories injected into system prompt.\n");
+                finalExtraSystemPrompt += flashbacks;
+              }
+            } else {
+              if (debug)
+                process.stderr.write(
+                  `💓 [MIND] Heartbeat detected - skipping resonance retrieval.\n`,
+                );
+            }
           }
         }
       } catch (e: any) {
@@ -699,10 +706,11 @@ export async function runEmbeddedPiAgent(
           }
 
           if (fallbackConfigured) {
-            const message = formatAssistantErrorText(lastAssistant, {
-              cfg: params.config as OpenClawConfig,
-              sessionKey: params.sessionKey ?? params.sessionId,
-            }) || errorText;
+            const message =
+              formatAssistantErrorText(lastAssistant, {
+                cfg: params.config as OpenClawConfig,
+                sessionKey: params.sessionKey ?? params.sessionId,
+              }) || errorText;
             const status = resolveFailoverStatus(assistantFailoverReason ?? "unknown");
             throw new FailoverError(message, {
               reason: assistantFailoverReason ?? "unknown",
@@ -718,7 +726,7 @@ export async function runEmbeddedPiAgent(
 
         // MIND INTEGRATION v1.0: Persist Assistant Message & Consolidate
         try {
-          if (isMindEnabled) {
+          if (isMindEnabled && !isSubagentSessionKey(params.sessionKey)) {
             const assistantText = attempt.assistantTexts.join("\n").trim();
             const isHeartbeatResponse = assistantText === "HEARTBEAT_OK";
 
@@ -728,16 +736,19 @@ export async function runEmbeddedPiAgent(
                 const { ConsolidationService } =
                   await import("../../services/memory/ConsolidationService.js");
 
-                const gUrl = (mindConfig?.config as any)?.graphiti?.baseUrl || "http://localhost:8001";
+                const gUrl =
+                  (mindConfig?.config as any)?.graphiti?.baseUrl || "http://localhost:8001";
                 const gs = new GraphService(gUrl, debug);
                 const cons = new ConsolidationService(gs, debug);
 
                 await gs.addEpisode("global-user-memory", `assistant: ${assistantText}`);
-                await cons.trackPendingEpisode(path.dirname(storyPath), `assistant: ${assistantText}`);
+                // await cons.trackPendingEpisode(...) -> Disabled in favor of Compaction Sync
               }
             } else if (isHeartbeatResponse) {
               if (debug)
-                process.stderr.write(`💓 [MIND] Heartbeat response detected - skipping memory storage.\n`);
+                process.stderr.write(
+                  `💓 [MIND] Heartbeat response detected - skipping memory storage.\n`,
+                );
             }
           }
         } catch (e: any) {
@@ -789,12 +800,12 @@ export async function runEmbeddedPiAgent(
             stopReason: attempt.clientToolCall ? "tool_calls" : undefined,
             pendingToolCalls: attempt.clientToolCall
               ? [
-                {
-                  id: `call_${Date.now()}`,
-                  name: attempt.clientToolCall.name,
-                  arguments: JSON.stringify(attempt.clientToolCall.params),
-                },
-              ]
+                  {
+                    id: `call_${Date.now()}`,
+                    name: attempt.clientToolCall.name,
+                    arguments: JSON.stringify(attempt.clientToolCall.params),
+                  },
+                ]
               : undefined,
           },
           didSendViaMessagingTool: attempt.didSendViaMessagingTool,

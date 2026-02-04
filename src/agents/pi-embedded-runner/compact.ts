@@ -7,6 +7,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import fs from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
 import type { ReasoningLevel, ThinkLevel } from "../../auto-reply/thinking.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { ExecElevatedDefaults } from "../bash-tools.js";
@@ -128,8 +129,9 @@ export async function compactEmbeddedPiSessionDirect(
       reason: error ?? `Unknown model: ${provider}/${modelId}`,
     };
   }
+  let apiKeyInfo: any;
   try {
-    const apiKeyInfo = await getApiKeyForModel({
+    apiKeyInfo = await getApiKeyForModel({
       model,
       cfg: params.config,
       profileId: params.authProfileId,
@@ -432,6 +434,84 @@ export async function compactEmbeddedPiSessionDirect(
         if (limited.length > 0) {
           session.agent.replaceMessages(limited);
         }
+
+        // Extract Subconscious Agent helper (Inline for now to avoid refactor complexity)
+        // This mirrors the logic in run.ts
+        const { streamSimple } = await import("@mariozechner/pi-ai");
+        const subconsciousAgent = {
+          complete: async (prompt: string) => {
+            let fullText = "";
+            try {
+              const key = ((authStorage as any).getRuntimeApiKey?.(model.provider) ||
+                apiKeyInfo?.apiKey) as string;
+              if (!key) return { text: "" };
+              const stream = streamSimple(
+                model,
+                {
+                  messages: [{ role: "user", content: prompt, timestamp: Date.now() } as any],
+                  temperature: 0,
+                } as any,
+                { apiKey: key },
+              );
+              for await (const chunk of stream) {
+                const ch = chunk as any;
+                let text = "";
+                if (ch.content) fullText = ch.content;
+                else if (ch.text) fullText = ch.text;
+                else if (ch.delta?.text) text = ch.delta.text;
+
+                if (text) fullText += text;
+              }
+            } catch (e: any) {
+              // Ignore
+            }
+            return { text: fullText };
+          },
+        };
+
+        // Initialize Mind Services
+        const mindConfig = params.config?.plugins?.entries?.["mind-memory"] as any;
+        const debug = !!mindConfig?.config?.debug;
+        const isMindEnabled =
+          mindConfig?.enabled && (mindConfig?.config?.narrative?.enabled ?? true);
+
+        if (isMindEnabled) {
+          try {
+            const { GraphService } = await import("../../services/memory/GraphService.js");
+            const { ConsolidationService } =
+              await import("../../services/memory/ConsolidationService.js");
+
+            const gUrl = (mindConfig?.config as any)?.graphiti?.baseUrl || "http://localhost:8001";
+            const gs = new GraphService(gUrl, debug);
+            const cons = new ConsolidationService(gs, debug);
+
+            const storyPath = path.join(effectiveWorkspace, "STORY.md");
+
+            // Resolve context window info for safe limit
+            const { resolveContextWindowInfo } = await import("../context-window-guard.js");
+            const ctxInfo = resolveContextWindowInfo({
+              cfg: params.config as any,
+              provider,
+              modelId,
+              modelContextWindow: model.contextWindow,
+              defaultTokens: 50000,
+            });
+            const safeTokenLimit = Math.floor((ctxInfo.tokens || 50000) * 0.5);
+
+            // SYNC SESSION TO STORY BEFORE COMPACTION
+            // This ensures we capture the detailed messages before they are summarized/pruned
+            await cons.syncStoryWithSession(
+              session.messages,
+              storyPath,
+              subconsciousAgent,
+              undefined,
+              safeTokenLimit,
+            );
+          } catch (e) {
+            console.warn("Mind consolidation failed during compaction:", e);
+          }
+        }
+
         const result = await session.compact(params.customInstructions);
         // Estimate tokens after compaction by summing token estimates for remaining messages
         let tokensAfter: number | undefined;

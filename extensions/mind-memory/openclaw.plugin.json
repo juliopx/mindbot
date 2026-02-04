@@ -42,7 +42,7 @@
     "models.consolidator": { "label": "Story Generation Model" },
     "debug": { "label": "Enable Verbose Debug Logs" }
   },
-  "moltbot": {
+  "openclaw": {
     "extensions": ["../../dist/plugins/mind-memory/index.js"]
   },
   "skills": ["./skills/recall"]

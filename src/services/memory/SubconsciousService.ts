@@ -1,5 +1,5 @@
-import { GraphService } from "./GraphService.js";
 import { getRelativeTimeDescription } from "../../utils/time-format.js";
+import { GraphService } from "./GraphService.js";
 
 export interface LLMClient {
   complete(prompt: string): Promise<{ text: string | null }>;
@@ -86,9 +86,7 @@ Respond with ONLY a newline-separated list of 1-3 terms (max 3 words each).
 BE CONCISE. DO NOT include headers or explanations.`;
 
     this.log(`  👁️ [OBSERVER] Analyzing context for search seeds...`);
-    this.log(
-      `      - Prompt: "${currentPrompt.substring(0, 50)}${currentPrompt.length > 50 ? "..." : ""}"`,
-    );
+    this.log(`      - Prompt: "${currentPrompt}"`);
     this.log(`      - Context: ${analysisWindow.length} prev messages`);
     if (analysisWindow.length > 0) {
       const lastMsg = analysisWindow[analysisWindow.length - 1];
@@ -96,7 +94,7 @@ BE CONCISE. DO NOT include headers or explanations.`;
       if (Array.isArray(lastText)) {
         lastText = lastText.map((p: any) => (typeof p === "string" ? p : p.text || "")).join(" ");
       }
-      this.log(`      - Last Context Msg: "${lastText.substring(0, 50)}..."`);
+      this.log(`      - Last Context Msg: "${lastText}"`);
     }
 
     try {
@@ -104,7 +102,6 @@ BE CONCISE. DO NOT include headers or explanations.`;
       let rawOutput = (response?.text || "").trim();
 
       // Kill massive hallucinations / loops
-      if (rawOutput.length > 500) rawOutput = rawOutput.substring(0, 500);
       rawOutput = this.truncateRepetitive(rawOutput);
 
       this.log(`  🔍 [SEEKER] Raw LLM output: "${rawOutput.replace(/\n/g, "\\n")}"`);
@@ -178,12 +175,11 @@ Text: "${currentPrompt}"`;
     let text = (response?.text || "").trim();
 
     // Kill massive hallucinations / loops
-    if (text.length > 500) text = text.substring(0, 500);
     text = this.truncateRepetitive(text);
 
     if (text.length > 0) {
       this.log(`  🔍 [ENTITY] Raw LLM output: "${text.replace(/\n/g, "\\n")}"`);
-      this.log(`      - Source Text: "${currentPrompt.substring(0, 50)}..."`);
+      this.log(`      - Source Text: "${currentPrompt}"`);
     }
 
     if (text.includes("NONE") || text.length < 2) return [];
@@ -241,7 +237,7 @@ Text: "${currentPrompt}"`;
     // Extended Debug for lost facts
     filtered.forEach((r) => {
       if (r._sourceQuery && r._sourceQuery.includes("Fact")) {
-        this.log(`  ✅ [ECHO PASS] Fact retained: "${r.content.substring(0, 40)}..."`);
+        this.log(`  ✅ [ECHO PASS] Fact retained: "${r.content}"`);
       }
     });
 
@@ -294,7 +290,7 @@ Text: "${currentPrompt}"`;
       const thresholdStr = oldestContextTimestamp.toISOString();
       if (!timestamp) {
         this.log(
-          `  ✅ [HORIZON] Allowed: No timestamp | Threshold(${thresholdStr}) | "${content.substring(0, 40).replace(/\n/g, " ")}..."`,
+          `  ✅ [HORIZON] Allowed: No timestamp | Threshold(${thresholdStr}) | "${content.replace(/\n/g, " ")}"`,
         );
         return true;
       }
@@ -303,7 +299,7 @@ Text: "${currentPrompt}"`;
 
       if (isNaN(memoryDate.getTime())) {
         this.log(
-          `  ⚠️ [HORIZON] Skipped invalid date: "${timestamp}" | "${content.substring(0, 40).replace(/\n/g, " ")}..."`,
+          `  ⚠️ [HORIZON] Skipped invalid date: "${timestamp}" | "${content.replace(/\n/g, " ")}"`,
         );
         return true; // Default to allow if date is broken
       }
@@ -317,7 +313,7 @@ Text: "${currentPrompt}"`;
       const typeLabel = isFact ? "[FACT]" : "[NODE]";
 
       this.log(
-        `  ${status} [HORIZON] ${action}: ${typeLabel} Mem(${memDateStr} via ${source}) < Threshold(${thresholdStr}) | "${content.substring(0, 40).replace(/\n/g, " ")}..."`,
+        `  ${status} [HORIZON] ${action}: ${typeLabel} Mem(${memDateStr} via ${source}) < Threshold(${thresholdStr}) | "${content.replace(/\n/g, " ")}"`,
       );
 
       return isAllowed;
@@ -377,7 +373,7 @@ Text: "${currentPrompt}"`;
       if (facts.length > 0) {
         this.log(`    ✅ [GRAPH] Found ${facts.length} facts for query: "${query}"`);
         facts.forEach((f) => {
-          this.log(`       -> Fact: "${f.content.substring(0, 50)}..."`);
+          this.log(`       -> Fact: "${f.content}"`);
         });
         allResults.push(...facts);
       }
@@ -411,11 +407,21 @@ Text: "${currentPrompt}"`;
     // 4. Echo Filter (Satiety)
     const deduplicated = this.applyEchoFilter(horizonFiltered);
 
-    // Sort to prioritize BOOSTED memories
+    // Sort to prioritize: 1) BOOSTED, 2) Facts over Nodes (facts are more personal/concise),
+    // 3) Older memories (deeper resonance)
     deduplicated.sort((a, b) => {
+      // Boosted first
       if (a._boosted && !b._boosted) return -1;
       if (!a._boosted && b._boosted) return 1;
-      return 0;
+      // Facts before Nodes (facts are more emotionally resonant)
+      const aIsFact = a._sourceQuery?.includes("Fact") ?? false;
+      const bIsFact = b._sourceQuery?.includes("Fact") ?? false;
+      if (aIsFact && !bIsFact) return -1;
+      if (!aIsFact && bIsFact) return 1;
+      // Older memories first (deeper echoes)
+      const aTs = a.timestamp || a.message?.created_at || a.message?.createdAt || 0;
+      const bTs = b.timestamp || b.message?.created_at || b.message?.createdAt || 0;
+      return new Date(aTs).getTime() - new Date(bTs).getTime();
     });
 
     const finalLines: string[] = [];
@@ -440,7 +446,7 @@ Text: "${currentPrompt}"`;
 
       if (!normalizedForComparison || seenContent.has(normalizedForComparison)) {
         if (r._sourceQuery?.includes("Fact")) {
-          this.log(`  🗑️ [DEDUP] Dropping Fact (already seen): "${content.substring(0, 30)}..."`);
+          this.log(`  🗑️ [DEDUP] Dropping Fact (already seen): "${content}"`);
         }
         continue;
       }
@@ -473,11 +479,11 @@ Text: "${currentPrompt}"`;
       }
 
       const relativeTime = getRelativeTimeDescription(finalDate);
-      const isFact = r._sourceQuery?.includes("Facts");
+      const isFact = r._sourceQuery?.includes("Fact") ?? false;
       const prefix = isFact ? "[HECHO] " : "";
 
       if (isFact) {
-        this.log(`  ✨ [FINAL] Adding Fact to Resonance: "${content.substring(0, 40)}..."`);
+        this.log(`  ✨ [FINAL] Adding Fact to Resonance: "${content}"`);
       }
 
       const sourceSuffix = r._boosted ? ` (⚡ via "${r._sourceQuery}")` : "";

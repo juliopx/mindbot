@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import type { AgentCommandOpts } from "./agent/types.js";
 import {
   listAgentIds,
@@ -441,6 +442,7 @@ export async function agentCommand(
               ? sessionEntry?.authProfileOverrideSource
               : undefined,
             thinkLevel: resolvedThinkLevel,
+            reasoningLevel: resolvedThinkLevel !== "off" ? "stream" : "off",
             verboseLevel: resolvedVerboseLevel,
             timeoutMs,
             runId,
@@ -450,6 +452,28 @@ export async function agentCommand(
             streamParams: opts.streamParams,
             agentDir,
             onAgentEvent: (evt) => {
+              // [MIND] Stream internal events for frontend visualization
+              try {
+                if (
+                  evt.stream === "lifecycle" ||
+                  evt.stream === "tool" ||
+                  evt.stream === "assistant" ||
+                  evt.stream === "auth-profile"
+                ) {
+                  // Use a distinct prefix or structure specific for the bridge
+                  const json =
+                    JSON.stringify({
+                      type: "mind_event",
+                      stream: evt.stream,
+                      data: evt.data,
+                      timestamp: Date.now(),
+                    }) + "\n";
+                  fs.writeSync(1, json);
+                }
+              } catch (e) {
+                // Ignore serialization errors to strictly avoid breaking the run
+              }
+
               // Track lifecycle end for fallback emission below.
               if (
                 evt.stream === "lifecycle" &&
@@ -458,6 +482,19 @@ export async function agentCommand(
               ) {
                 lifecycleEnded = true;
               }
+            },
+            onReasoningStream: (token) => {
+              // [NEW] Stream thinking events
+              try {
+                const json =
+                  JSON.stringify({
+                    type: "mind_event",
+                    stream: "thought",
+                    data: { text: token },
+                    timestamp: Date.now(),
+                  }) + "\n";
+                fs.writeSync(1, json);
+              } catch (e) {}
             },
           });
         },

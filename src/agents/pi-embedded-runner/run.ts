@@ -557,17 +557,20 @@ export async function runEmbeddedPiAgent(
                 }
               } catch {}
 
-              // GLOBAL NARRATIVE SYNC (with file-based lock to skip if already running elsewhere)
-              const { resolveSessionTranscriptsDir } =
-                await import("../../config/sessions/paths.js");
-              const sessionsDir = resolveSessionTranscriptsDir();
-              await cons.syncGlobalNarrative(
-                sessionsDir,
-                storyPath,
-                subconsciousAgent,
-                identityContext,
-                safeTokenLimit,
-              );
+              // GLOBAL NARRATIVE SYNC — only narrates old sessions outside current context
+              {
+                const { resolveSessionTranscriptsDir } =
+                  await import("../../config/sessions/paths.js");
+                const sessionsDir = resolveSessionTranscriptsDir();
+                await cons.syncGlobalNarrative(
+                  sessionsDir,
+                  storyPath,
+                  subconsciousAgent,
+                  identityContext,
+                  safeTokenLimit,
+                  params.sessionFile, // exclude current session (already in LLM context)
+                );
+              }
 
               // Persist User Message to Graphiti (Semantic Search)
               if (debug)

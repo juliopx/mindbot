@@ -582,6 +582,7 @@ ${newStory}
     agent: any,
     identityContext?: string,
     safeTokenLimit: number = 50000,
+    currentSessionFile?: string,
   ): Promise<void> {
     try {
       // Guard: file-based lock to prevent concurrent syncs across processes
@@ -632,9 +633,16 @@ ${newStory}
 
       // 2. Scan Recent Sessions
       const files = await fs.readdir(sessionsDir).catch(() => []);
+      // Exclude current session file (its messages are already in LLM context)
+      const currentSessionBasename = currentSessionFile
+        ? path.basename(currentSessionFile)
+        : undefined;
       const jsonlFiles = files
-        .filter((f) => f.endsWith(".jsonl"))
+        .filter((f) => f.endsWith(".jsonl") && f !== currentSessionBasename)
         .map((f) => path.join(sessionsDir, f));
+      if (currentSessionBasename) {
+        this.log(`   Excluding current session: ${currentSessionBasename}`);
+      }
 
       // Sort by mtime descending (newest first) and take top 5
       const recentFiles = (

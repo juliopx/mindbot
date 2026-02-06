@@ -545,8 +545,19 @@ export async function runEmbeddedPiAgent(
               // Bootstrap historical episodes
               await cons.bootstrapHistoricalEpisodes(params.sessionId, memoryDir, sessionMessages);
 
-              // GLOBAL NARRATIVE SYNC (Startup)
-              // Recover any un-narrated messages from previous sessions
+              // FETCH NARRATIVE STORY EARLY (before sync, for immediate LLM context)
+              try {
+                const earlyStory = await fs.readFile(storyPath, "utf-8").catch(() => null);
+                if (earlyStory) {
+                  narrativeStory = { content: earlyStory, updatedAt: new Date() };
+                  if (debug)
+                    process.stderr.write(
+                      `📖 [MIND] Pre-sync Story retrieved (${earlyStory.length} chars)\n`,
+                    );
+                }
+              } catch {}
+
+              // GLOBAL NARRATIVE SYNC (with file-based lock to skip if already running elsewhere)
               const { resolveSessionTranscriptsDir } =
                 await import("../../config/sessions/paths.js");
               const sessionsDir = resolveSessionTranscriptsDir();
@@ -574,7 +585,7 @@ export async function runEmbeddedPiAgent(
                 );
             }
 
-            // 2. Fetch Narrative Story (ALWAYS, even for heartbeats)
+            // 2. Fetch Narrative Story (reload after sync in case it was updated, or use pre-sync version)
             try {
               const storyContent = await fs.readFile(storyPath, "utf-8").catch(() => null);
               if (storyContent) {
@@ -589,8 +600,9 @@ export async function runEmbeddedPiAgent(
                 process.stderr.write(`⚠️ [MIND] Failed to read local story: ${e.message}\n`);
             }
 
-            // 3. Get Flashbacks (Only for real messages)
-            if (!isHeartbeatPrompt) {
+            // 3. Get Flashbacks (Only for real messages, skip if MIND_SKIP_RESONANCE is set)
+            const skipResonance = process.env.MIND_SKIP_RESONANCE === "1";
+            if (!isHeartbeatPrompt && !skipResonance) {
               let oldestContextTimestamp: Date | undefined;
               let rawHistory: any[] = [];
               try {
@@ -633,10 +645,12 @@ export async function runEmbeddedPiAgent(
                 finalExtraSystemPrompt += flashbacks;
               }
             } else {
-              if (debug)
-                process.stderr.write(
-                  `💓 [MIND] Heartbeat detected - skipping resonance retrieval.\n`,
-                );
+              if (debug) {
+                const reason = skipResonance
+                  ? "MIND_SKIP_RESONANCE=1 (voice mode)"
+                  : "Heartbeat detected";
+                process.stderr.write(`⏭️ [MIND] ${reason} - skipping resonance retrieval.\n`);
+              }
             }
           }
         }

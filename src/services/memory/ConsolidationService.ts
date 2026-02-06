@@ -5,6 +5,10 @@ import { getRelativeTimeDescription } from "../../utils/time-format.js";
 import { GraphService } from "./GraphService.js";
 import { buildStoryPrompt, type StoryPromptOptions } from "./story-prompt-builder.js";
 
+// File-based lock to prevent concurrent narrative syncs across separate Node processes
+const NARRATIVE_LOCK_FILE = "/tmp/mind_narrative_sync.lock";
+const NARRATIVE_LOCK_MAX_AGE_MS = 120_000; // 2 minutes (stale lock detection)
+
 export class ConsolidationService {
   private graph: GraphService;
   private debug: boolean;
@@ -580,6 +584,33 @@ ${newStory}
     safeTokenLimit: number = 50000,
   ): Promise<void> {
     try {
+      // Guard: file-based lock to prevent concurrent syncs across processes
+      try {
+        const lockStat = await fs.stat(NARRATIVE_LOCK_FILE);
+        const lockAge = Date.now() - lockStat.mtimeMs;
+        if (lockAge < NARRATIVE_LOCK_MAX_AGE_MS) {
+          this.log(
+            `⏭️ [MIND] Global Narrative Sync already in progress (lock age: ${Math.round(lockAge / 1000)}s) - skipping.`,
+          );
+          return;
+        }
+        // Lock is stale (>2min), process probably crashed - take over
+        this.log(
+          `⚠️ [MIND] Stale narrative lock detected (${Math.round(lockAge / 1000)}s old) - taking over.`,
+        );
+      } catch {
+        // Lock file doesn't exist - we're clear to proceed
+      }
+
+      // Acquire lock
+      await fs.writeFile(
+        NARRATIVE_LOCK_FILE,
+        JSON.stringify({
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+        }),
+      );
+
       this.log(`🌍 [MIND] Starting Global Narrative Sync (Limit: ${safeTokenLimit} tokens)...`);
 
       // 1. Get Story Anchor Timestamp
@@ -720,6 +751,11 @@ ${newStory}
       }
     } catch (e: any) {
       process.stderr.write(`❌ [MIND] Global Sync failed: ${e.message}\n`);
+    } finally {
+      // Release file lock
+      try {
+        await fs.unlink(NARRATIVE_LOCK_FILE);
+      } catch {}
     }
   }
 

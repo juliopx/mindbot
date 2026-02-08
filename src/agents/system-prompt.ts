@@ -40,12 +40,16 @@ function buildMemorySection(params: { isMinimal: boolean; availableTools: Set<st
   if (params.isMinimal) {
     return [];
   }
-  if (!params.availableTools.has("memory_search") && !params.availableTools.has("memory_get")) {
+  if (
+    !params.availableTools.has("journal_memory_search") &&
+    !params.availableTools.has("journal_memory_get")
+  ) {
     return [];
   }
   return [
     "## Memory Recall",
-    "Before answering anything about prior work, decisions, dates, people, preferences, or todos: run memory_search on MEMORY.md + memory/*.md; then use memory_get to pull only the needed lines. If low confidence after search, say you checked.",
+    "Before answering anything about prior work, decisions, dates, people, preferences, or todos: run journal_memory_search on MEMORY.md + memory/*.md; then use journal_memory_get to pull only the needed lines. If low confidence after search, say you checked.",
+    "MEMORY.md contains structured facts, data, decisions, and key references only — never narrative or prose.",
     "",
   ];
 }
@@ -554,9 +558,9 @@ export function buildAgentSystemPrompt(params: {
 
   if (params.narrativeStory?.trim()) {
     lines.push(
-      "# Narrative Story (Mind Memory)",
+      "# Narrative Story",
       "",
-      "This is your ongoing narrative memory. It captures key facts, preferences, and context from past conversations. Use it to maintain continuity and personalize your responses.",
+      "This is your ongoing narrative memory. It captures experiences, emotions, and continuity across conversations.",
       "",
       params.narrativeStory.trim(),
       "",

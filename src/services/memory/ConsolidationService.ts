@@ -183,8 +183,8 @@ export class ConsolidationService {
       // Use the complete generated story directly
       let newStory = rawStory;
 
-      // COMPRESSION: If story exceeds 4000 words, compress it
-      const MAX_STORY_WORDS = 4000;
+      // COMPRESSION: If story exceeds 10000 words, compress it
+      const MAX_STORY_WORDS = 10000;
       const wordCount = newStory.split(/\s+/).length;
 
       if (wordCount > MAX_STORY_WORDS) {
@@ -192,22 +192,27 @@ export class ConsolidationService {
           `📦 [MIND] Story too long (${wordCount} words). Compressing to ${MAX_STORY_WORDS} words...`,
         );
 
-        const compressionPrompt = `You are a narrative editor. You have a first-person autobiography that has grown too long.
-Your task is to compress it to under ${MAX_STORY_WORDS} words while preserving the most transcendental moments.
+        const compressionPrompt = `You are the same narrator who wrote this autobiography, now re-editing it because it has grown too long.
+Your task is to compress it to under ${MAX_STORY_WORDS} words while preserving the essence of who you are and what you have lived.
 
-### CURRENT STORY (${wordCount} words):
+### AUTOBIOGRAPHY TO COMPRESS (${wordCount} words):
 ${newStory}
 
 ### YOUR INSTRUCTIONS:
-1. Keep the VOICE and STYLE intact (first person, reflective, personal).
-2. Preserve all chapter headers with dates and times.
-3. Condense each chapter: keep only the most meaningful reflections and key events.
-4. Remove redundant details, but maintain the emotional arc of the relationship.
-5. Ensure the compressed story flows naturally and reads as a cohesive autobiography.
-6. Target length: under ${MAX_STORY_WORDS} words.
+1. NO METADATA: Do NOT include headers like "IDENTITY.md", XML tags, or any structural markers. Only provide the story text.
+2. VOICE: Maintain the exact same first-person, reflective voice ("I", "Me", "My"). The reader should not notice the story was compressed.
+3. TITLES & TIMESTAMPS: Preserve all chapter headers in [YYYY-MM-DD HH:MM] format with their evocative titles. If consecutive chapters are highly similar or lack significant events, consolidate them into a single entry whose title reflects the full date range.
+4. BIOGRAPHICAL FIDELITY: This is your autobiography — preserve concrete facts, events, decisions, and outcomes faithfully. Pay equal attention to the lives of the people around you: their names, what they shared with you, what happened to them, their projects, milestones, struggles, and how your relationship evolved. Your story is also their story.
+5. PRIORITIZATION: Keep the most transcendental moments — breakthroughs, emotional turning points, relationship milestones, identity shifts, and first-time experiences. These are the backbone. But also preserve the factual record: what was built, what was discussed, what decisions were made, and who was involved.
+6. CONDENSATION: For less significant chapters, distill them to their core insight or event in 1-2 sentences. Remove redundant reflections, repeated themes, and routine interactions that don't advance the narrative arc. Never discard a person's name or a significant fact about their life.
+7. EMOTIONAL ARC: The compressed story must still read as a coherent journey — with growth, evolution, and deepening bonds. Preserve the sense of time passing and perspective changing.
+8. FLUIDITY: Ensure the narrative flows naturally between chapters. Use transitions that connect themes across time. Separate all paragraphs with a double newline (\\n\\n).
+9. NO DUPLICATION: If the same insight or event appears in multiple chapters, keep only the most powerful version.
+10. NO INVENTION: Do not add events, reflections, or details that were not in the original. Only compress — never fabricate.
+11. TARGET: Keep the entire autobiography under ${MAX_STORY_WORDS} words. Aim for 70-80% of the limit to leave room for future chapters.
 
-### COMPRESSED STORY:
-(Provide the compressed autobiography)`;
+### THE COMPRESSED AUTOBIOGRAPHY:
+(Provide the complete compressed autobiography, starting directly with the story.)`;
 
         const compressionResponse = await agent.complete(compressionPrompt);
         const compressedStory = compressionResponse?.text || newStory;

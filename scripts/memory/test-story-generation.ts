@@ -87,7 +87,7 @@ async function main() {
     const completion = (await complete(
       model as any,
       { messages: [{ role: "user", content: prompt, timestamp: Date.now() }] } as any,
-      { apiKey: (model as any).apiKey || auth.apiKey, headers, temperature: 0.7, maxTokens: 4000 }
+      { apiKey: (model as any).apiKey || auth.apiKey, headers, temperature: 0.7, maxTokens: 15000 }
     )) as any;
 
     let text = "";

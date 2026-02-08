@@ -505,6 +505,7 @@ export async function runEmbeddedPiAgent(
       const storyPath = path.join(resolvedWorkspace, "STORY.md");
       const isMindEnabled = mindConfig?.enabled && (mindConfig?.config?.narrative?.enabled ?? true);
       const tokenThreshold = mindConfig?.config?.narrative?.tokenThreshold ?? 5000;
+      const safeTokenLimit = Math.floor((ctxInfo.tokens || 50000) * 0.5);
 
       // HEARTBEAT DETECTION (Incoming)
       const isHeartbeatPrompt =
@@ -539,8 +540,6 @@ export async function runEmbeddedPiAgent(
               const memoryDir = path.join(path.dirname(storyPath), "memory");
               const sessionMgr = SessionManager.open(params.sessionFile);
               const sessionMessages = sessionMgr.buildSessionContext().messages || [];
-
-              const safeTokenLimit = Math.floor((ctxInfo.tokens || 50000) * 0.5);
 
               // Bootstrap historical episodes
               await cons.bootstrapHistoricalEpisodes(params.sessionId, memoryDir, sessionMessages);
@@ -661,9 +660,90 @@ export async function runEmbeddedPiAgent(
         process.stderr.write(`❌ [MIND] Subconscious error: ${e.message}\n`);
       }
 
+      // Wrap onAgentEvent to hook into auto-compaction for STORY.md sync.
+      // After compaction, messages that were removed from context (summarized away)
+      // need to be narrated to STORY.md before they're lost. Messages still in
+      // context are NOT narrated (they're already available to the LLM).
+      const wrappedOnAgentEvent =
+        isMindEnabled && !isSubagentSessionKey(params.sessionKey) && !isHeartbeatPrompt
+          ? (evt: { stream: string; data: Record<string, unknown> }) => {
+              if (
+                evt.stream === "compaction" &&
+                (evt.data as any)?.phase === "end" &&
+                !(evt.data as any)?.willRetry
+              ) {
+                // Fire-and-forget: narrate compacted-away messages to STORY.md
+                (async () => {
+                  try {
+                    const sm = SessionManager.open(params.sessionFile);
+
+                    // Full history from the .jsonl (all entries, including compacted ones)
+                    const allMessages = sm
+                      .getBranch()
+                      .filter((e) => e.type === "message")
+                      .filter((e) => (e.message as any)?.role !== "system")
+                      .map((e: any) => ({
+                        role: (e.message as any)?.role,
+                        text: (e.message as any)?.text || (e.message as any)?.content,
+                        timestamp: e.timestamp,
+                      }));
+
+                    // Messages currently in LLM context (post-compaction)
+                    const contextMessages = sm.buildSessionContext().messages || [];
+                    const contextTimestamps = new Set(contextMessages.map((m: any) => m.timestamp));
+
+                    // Messages that got compacted away = in full history but NOT in current context
+                    const compactedMessages = allMessages.filter(
+                      (m) => m.timestamp && !contextTimestamps.has(m.timestamp),
+                    );
+
+                    if (compactedMessages.length === 0) {
+                      if (debug)
+                        process.stderr.write(
+                          `🧠 [MIND] Auto-compaction detected — no new compacted messages to narrate.\n`,
+                        );
+                      return;
+                    }
+
+                    if (debug)
+                      process.stderr.write(
+                        `🧠 [MIND] Auto-compaction detected — narrating ${compactedMessages.length} compacted messages to STORY.md...\n`,
+                      );
+
+                    const { ConsolidationService } =
+                      await import("../../services/memory/ConsolidationService.js");
+                    const { GraphService } = await import("../../services/memory/GraphService.js");
+                    const gUrl =
+                      (mindConfig?.config as any)?.graphiti?.baseUrl || "http://localhost:8001";
+                    const gs = new GraphService(gUrl, debug);
+                    const cons = new ConsolidationService(gs, debug);
+
+                    await cons.syncStoryWithSession(
+                      compactedMessages,
+                      storyPath,
+                      subconsciousAgent,
+                      identityContext,
+                      safeTokenLimit,
+                    );
+
+                    if (debug)
+                      process.stderr.write(`✅ [MIND] Post-compaction STORY.md sync complete.\n`);
+                  } catch (e: any) {
+                    process.stderr.write(
+                      `❌ [MIND] Post-compaction story sync failed: ${e.message}\n`,
+                    );
+                  }
+                })();
+              }
+              // Always forward the event to the original handler
+              params.onAgentEvent?.(evt);
+            }
+          : params.onAgentEvent;
+
       const started = Date.now();
       let aborted = false;
       let timedOut = false;
+      let didCompactOnOverflow = false;
 
       while (!aborted && !timedOut) {
         process.stderr.write("🤖 [MIND] Calling LLM...\n");
@@ -701,7 +781,7 @@ export async function runEmbeddedPiAgent(
           blockReplyChunking: params.blockReplyChunking,
           onReasoningStream: params.onReasoningStream,
           onToolResult: params.onToolResult,
-          onAgentEvent: params.onAgentEvent,
+          onAgentEvent: wrappedOnAgentEvent,
           streamParams: params.streamParams,
           ownerNumbers: params.ownerNumbers,
           enforceFinalTag: params.enforceFinalTag,
@@ -718,6 +798,86 @@ export async function runEmbeddedPiAgent(
 
         if (aborted || timedOut || !attempt) {
           break;
+        }
+
+        // Handle promptError (overflow/compaction failure caught before session starts)
+        if (attempt.promptError) {
+          const promptErrMsg =
+            attempt.promptError instanceof Error
+              ? attempt.promptError.message
+              : String(attempt.promptError);
+
+          if (isCompactionFailureError(promptErrMsg)) {
+            log.error(`compaction failure in prompt: ${promptErrMsg}`);
+            return {
+              payloads: [{ text: `Session compaction failed: ${promptErrMsg}`, isError: true }],
+              meta: {
+                durationMs: Date.now() - started,
+                agentMeta: { sessionId: params.sessionId, provider, model: model.id },
+                error: { kind: "compaction_failure", message: promptErrMsg },
+              },
+            } as any;
+          }
+
+          if (isContextOverflowError(promptErrMsg)) {
+            if (didCompactOnOverflow) {
+              log.warn("context overflow persists after compaction; giving up");
+              return {
+                payloads: [
+                  {
+                    text: "Session context is too large even after compaction. Please start a new session with /new.",
+                    isError: true,
+                  },
+                ],
+                meta: {
+                  durationMs: Date.now() - started,
+                  agentMeta: { sessionId: params.sessionId, provider, model: model.id },
+                  error: { kind: "context_overflow", message: promptErrMsg },
+                },
+              } as any;
+            }
+
+            log.warn("context overflow detected; attempting auto-compaction...");
+            const compactResult = await compactEmbeddedPiSessionDirect({
+              sessionFile: params.sessionFile,
+              sessionId: params.sessionId,
+              sessionKey: params.sessionKey,
+              config: params.config as OpenClawConfig,
+              agentDir,
+              authProfileId:
+                (apiKeyInfo as ApiKeyInfo | null)?.profileId ??
+                lastProfileId ??
+                params.authProfileId,
+              model: modelId,
+              provider,
+              workspaceDir: resolvedWorkspace,
+            });
+            didCompactOnOverflow = true;
+
+            if (!compactResult?.ok || !compactResult?.compacted) {
+              log.warn(
+                `auto-compaction failed: ${(compactResult as any)?.reason ?? "unknown reason"}`,
+              );
+              return {
+                payloads: [
+                  {
+                    text: "Session context is too large and compaction failed. Please start a new session with /new.",
+                    isError: true,
+                  },
+                ],
+                meta: {
+                  durationMs: Date.now() - started,
+                  agentMeta: { sessionId: params.sessionId, provider, model: model.id },
+                  error: { kind: "context_overflow", message: promptErrMsg },
+                },
+              } as any;
+            }
+
+            log.info(
+              `auto-compaction succeeded (tokens before: ${(compactResult as any)?.result?.tokensBefore ?? "?"})`,
+            );
+            continue;
+          }
         }
 
         const lastAssistant = attempt.lastAssistant as any;

@@ -92,24 +92,29 @@ export async function setupMindMemory(
       return cfg;
     }
     spin.stop("Mind Memory infrastructure is ready (Docker).");
-  } catch (e: any) {
+  } catch (e: unknown) {
     try {
-      spin.stop(`Mind Memory setup failed: ${e.message}`);
+      const message = e instanceof Error ? e.message : String(e);
+      spin.stop(`Mind Memory setup failed: ${message}`);
     } catch {}
     return cfg;
   }
 
   // Update config to enable the plugin
+  type PluginsConfig = {
+    slots?: Record<string, string>;
+    entries?: Record<string, { enabled?: boolean; config?: unknown }>;
+  };
   const next: OpenClawConfig = {
     ...cfg,
     plugins: {
-      ...(cfg.plugins as any),
+      ...(cfg.plugins as PluginsConfig),
       slots: {
-        ...(cfg.plugins as any)?.slots,
+        ...(cfg.plugins as PluginsConfig)?.slots,
         memory: "mind-memory",
       },
       entries: {
-        ...(cfg.plugins as any)?.entries,
+        ...(cfg.plugins as PluginsConfig)?.entries,
         "mind-memory": {
           enabled: true,
           config: {

@@ -587,7 +587,7 @@ export async function runEmbeddedPiAgent(
                       timestamp: e.timestamp,
                     });
                     return {
-                      role: (m.role || "assistant") as string,
+                      role: m.role || "assistant",
                       text: text,
                       timestamp: e.timestamp as unknown as number,
                     };

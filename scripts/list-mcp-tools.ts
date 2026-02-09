@@ -26,8 +26,9 @@ async function main() {
     const text = await res.text();
     console.log("--- AVAILABLE TOOLS ---\n");
     console.log(text);
-  } catch (e: any) {
-    console.error(`Error: ${e.message}`);
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error(`Error: ${message}`);
   }
 }
 

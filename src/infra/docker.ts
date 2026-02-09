@@ -19,8 +19,9 @@ export async function getDockerStatus(): Promise<DockerStatus> {
     try {
       await execAsync("docker info");
       return { installed: true, running: true, version: version.trim() };
-    } catch (e: any) {
-      return { installed: true, running: false, version: version.trim(), error: e.message };
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      return { installed: true, running: false, version: version.trim(), error: message };
     }
   } catch {
     return { installed: false, running: false };
@@ -36,8 +37,9 @@ export async function installDockerNative(): Promise<{ ok: boolean; message: str
       await execAsync("command -v brew");
       await execAsync("brew install --cask docker");
       return { ok: true, message: "Docker Desktop installed via Homebrew." };
-    } catch (err: any) {
-      return { ok: false, message: `Failed to install on Mac: ${err.message}` };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, message: `Failed to install on Mac: ${message}` };
     }
   } else if (process.platform === "win32") {
     try {
@@ -45,15 +47,17 @@ export async function installDockerNative(): Promise<{ ok: boolean; message: str
         "winget install Docker.DockerDesktop --accept-package-agreements --accept-source-agreements",
       );
       return { ok: true, message: "Docker Desktop installed via winget." };
-    } catch (err: any) {
-      return { ok: false, message: `Failed to install on Windows: ${err.message}` };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, message: `Failed to install on Windows: ${message}` };
     }
   } else if (process.platform === "linux") {
     try {
       await execAsync("sudo apt-get update && sudo apt-get install -y docker.io");
       return { ok: true, message: "Docker installed via apt." };
-    } catch (err: any) {
-      return { ok: false, message: `Failed to install on Linux: ${err.message}` };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, message: `Failed to install on Linux: ${message}` };
     }
   }
   return { ok: false, message: `Unsupported platform: ${process.platform}` };
@@ -78,7 +82,7 @@ export async function ensureDockerDaemon(
     try {
       await execAsync("docker info");
       return true; // Docker is ready
-    } catch (e: any) {
+    } catch (e: unknown) {
       if (!didAttemptLaunch) {
         onLog("🐳 [DOCKER] Daemon not running. Attempting to start Docker...");
         try {
@@ -91,8 +95,9 @@ export async function ensureDockerDaemon(
             await execAsync("sudo systemctl start docker");
           }
           didAttemptLaunch = true;
-        } catch (launchErr: any) {
-          onLog(`⚠️ [DOCKER] Startup failed: ${launchErr.message}`);
+        } catch (launchErr: unknown) {
+          const message = launchErr instanceof Error ? launchErr.message : String(launchErr);
+          onLog(`⚠️ [DOCKER] Startup failed: ${message}`);
         }
       }
 

@@ -75,8 +75,9 @@ export async function ensureGraphitiDocker(pluginDir: string): Promise<boolean> 
     await execAsync(`docker compose -f ${composePath} up -d`);
     process.stderr.write("✅ [DOCKER] Graphiti started successfully.\n");
     return true;
-  } catch (e: any) {
-    process.stderr.write(`❌ [DOCKER] Error: ${e.message}\n`);
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    process.stderr.write(`❌ [DOCKER] Error: ${message}\n`);
     return false;
   }
 }

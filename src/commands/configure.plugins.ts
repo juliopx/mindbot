@@ -9,25 +9,25 @@ import { guardCancel } from "./onboard-helpers.js";
 
 function getNestedValue(obj: Record<string, unknown>, path: string): unknown {
   const keys = path.split(".");
-  let current: any = obj;
+  let current: unknown = obj;
   for (const key of keys) {
     if (current === undefined || current === null || typeof current !== "object") {
       return undefined;
     }
-    current = current[key];
+    current = (current as Record<string, unknown>)[key];
   }
   return current;
 }
 
 function setNestedValue(obj: Record<string, unknown>, path: string, value: unknown): void {
   const keys = path.split(".");
-  let current: any = obj;
+  let current: Record<string, unknown> = obj;
   for (let i = 0; i < keys.length - 1; i++) {
     const key = keys[i];
     if (!(key in current) || current[key] === null || typeof current[key] !== "object") {
       current[key] = {};
     }
-    current = current[key];
+    current = current[key] as Record<string, unknown>;
   }
   current[keys[keys.length - 1]] = value;
 }
@@ -37,14 +37,23 @@ function getSchemaDefault(schema: Record<string, unknown>, path: string): unknow
     return undefined;
   }
   const keys = path.split(".");
-  let current: any = schema;
+  let current: unknown = schema;
   for (const key of keys) {
-    if (!current.properties || !current.properties[key]) {
+    if (
+      !current ||
+      typeof current !== "object" ||
+      !("properties" in current) ||
+      typeof current.properties !== "object" ||
+      !current.properties ||
+      !(key in current.properties)
+    ) {
       return undefined;
     }
-    current = current.properties[key];
+    current = (current.properties as Record<string, unknown>)[key];
   }
-  return current.default;
+  return current && typeof current === "object" && "default" in current
+    ? current.default
+    : undefined;
 }
 
 async function promptPluginEntryConfig(
@@ -96,14 +105,20 @@ async function promptPluginEntryConfig(
   }
 
   if (toggleEnabled && plugin.configUiHints) {
-    const pluginConfig = (entry.config ?? {}) as Record<string, unknown>;
+    const pluginConfig = entry.config ?? {};
     const nextPluginConfig = { ...pluginConfig };
 
     for (const [key, hint] of Object.entries(plugin.configUiHints)) {
       const message = hint.label || key;
       const currentVal = getNestedValue(pluginConfig, key);
       const defaultVal = getSchemaDefault(plugin.configJsonSchema, key);
-      const initialValue = String(currentVal ?? defaultVal ?? hint.placeholder ?? "");
+      const fallback = currentVal ?? defaultVal ?? hint.placeholder ?? "";
+      const initialValue =
+        typeof fallback === "string" ||
+        typeof fallback === "number" ||
+        typeof fallback === "boolean"
+          ? String(fallback)
+          : "";
 
       if (hint.sensitive) {
         const input = guardCancel(
@@ -129,7 +144,7 @@ async function promptPluginEntryConfig(
         );
         if (input !== undefined) {
           const val = String(input).trim();
-          let finalVal: any = val;
+          let finalVal: unknown = val;
           // Simple type conversion for booleans/numbers if they look like it
           if (val.toLowerCase() === "true") {
             finalVal = true;
@@ -181,7 +196,7 @@ export async function promptPluginsConfig(
       const status = isEnabled ? "✅ enabled" : "❌ disabled";
       return {
         value: p.id,
-        label: `${p.name || p.id}`,
+        label: p.name || p.id,
         hint: `${status} — ${p.description || ""}`,
       };
     });

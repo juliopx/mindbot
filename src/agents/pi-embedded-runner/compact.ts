@@ -136,7 +136,11 @@ export async function compactEmbeddedPiSessionDirect(
       reason: error ?? `Unknown model: ${provider}/${modelId}`,
     };
   }
-  let apiKeyInfo: any;
+  type ApiKeyInfo = {
+    apiKey?: string;
+    mode?: string;
+  };
+  let apiKeyInfo: ApiKeyInfo;
   try {
     apiKeyInfo = await getApiKeyForModel({
       model,
@@ -440,7 +444,22 @@ export async function compactEmbeddedPiSessionDirect(
         }
 
         // Initialize Mind Services
-        const mindConfig = params.config?.plugins?.entries?.["mind-memory"] as any;
+        type MindMemoryConfig = {
+          enabled?: boolean;
+          config?: {
+            debug?: boolean;
+            graphiti?: {
+              baseUrl?: string;
+            };
+            narrative?: {
+              enabled?: boolean;
+              autoBootstrapHistory?: boolean;
+            };
+          };
+        };
+        const mindConfig = params.config?.plugins?.entries?.["mind-memory"] as
+          | MindMemoryConfig
+          | undefined;
         const debug = !!mindConfig?.config?.debug;
 
         // Subconscious agent for narrative LLM calls (shared with run.ts)
@@ -500,9 +519,10 @@ export async function compactEmbeddedPiSessionDirect(
             if (debug) {
               process.stderr.write(`📖 [MIND] Story sync completed\n`);
             }
-          } catch (e: any) {
+          } catch (e: unknown) {
+            const message = e instanceof Error ? e.message : String(e);
             process.stderr.write(
-              `❌ [MIND] Mind consolidation failed during compaction: ${e?.message || e}\n`,
+              `❌ [MIND] Mind consolidation failed during compaction: ${message}\n`,
             );
           }
         }

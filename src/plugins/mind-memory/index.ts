@@ -10,7 +10,7 @@ import { SubconsciousService } from "../../services/memory/SubconsciousService.j
 import { ensureGraphitiDocker, installDocker } from "./docker.js";
 
 interface PluginApi {
-  config: Record<string, any>;
+  config: Record<string, unknown>;
   logger: {
     info: (msg: string) => void;
     error: (msg: string) => void;
@@ -24,9 +24,12 @@ interface PluginApi {
   registerCli: (cb: (ctx: { program: Command }) => void, options: { commands: string[] }) => void;
   registerGatewayMethod: (
     id: string,
-    cb: (ctx: { params: any; respond: (ok: boolean, payload?: any) => void }) => Promise<void>,
+    cb: (ctx: {
+      params: unknown;
+      respond: (ok: boolean, payload?: unknown) => void;
+    }) => Promise<void>,
   ) => void;
-  registerTool: (tool: any) => void;
+  registerTool: (tool: unknown) => void;
 }
 
 export default function register(api: PluginApi) {
@@ -116,12 +119,13 @@ export default function register(api: PluginApi) {
                 // Simple bridge for the consolidation service
                 const bridge = {
                   complete: async (prompt: string) => {
+                    // Bridge to pi-ai's complete function (external library with loose typing)
                     const res = await complete(
-                      llm as any,
-                      { messages: [{ role: "user", content: prompt }] } as any,
+                      llm as unknown,
+                      { messages: [{ role: "user", content: prompt }] } as unknown,
                       { apiKey: runtimeKey },
                     );
-                    return { text: (res as unknown as { content?: string }).content || "" };
+                    return { text: (res as { content?: string }).content || "" };
                   },
                 };
                 await (
@@ -283,7 +287,9 @@ export default function register(api: PluginApi) {
         const lines = combined
           .map((item) => {
             const content =
-              (item.content as string) || (item.fact as string) || JSON.stringify(item);
+              (typeof item.content === "string" ? item.content : null) ||
+              (typeof item.fact === "string" ? item.fact : null) ||
+              JSON.stringify(item);
             const date = item.timestamp
               ? `[${new Date(item.timestamp as string | number | Date).toISOString().split("T")[0]}] `
               : "";

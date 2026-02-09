@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { estimateTokens } from "@mariozechner/pi-coding-agent";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -10,8 +11,8 @@ const NARRATIVE_LOCK_FILE = "/tmp/mind_narrative_sync.lock";
 const NARRATIVE_LOCK_MAX_AGE_MS = 120_000; // 2 minutes (stale lock detection)
 
 export class ConsolidationService {
-  private graph: GraphService;
-  private debug: boolean;
+  private readonly graph: GraphService;
+  private readonly debug: boolean;
 
   constructor(graph: GraphService, debug: boolean = false) {
     this.graph = graph;
@@ -811,7 +812,7 @@ ${newStory}
           role: (msg.role || "assistant") as "user" | "assistant",
           content: msg.text,
           timestamp: 0,
-        } as any);
+        } as AgentMessage);
 
         // Trigger update if adding this message exceeds the safe limit
         if (currentBatch.length > 0 && currentBatchTokens + msgTokens > safeTokenLimit) {
@@ -825,7 +826,7 @@ ${newStory}
             storyPath,
             agent,
             identityContext,
-            currentBatch[currentBatch.length - 1].timestamp,
+            currentBatch[currentBatch.length - 1]?.timestamp,
           );
           currentBatch = [];
           currentBatchTokens = 0;
@@ -847,9 +848,14 @@ ${newStory}
           storyPath,
           agent,
           identityContext,
-          currentBatch[currentBatch.length - 1].timestamp
-            ? new Date(currentBatch[currentBatch.length - 1].timestamp!).getTime()
-            : undefined,
+          (() => {
+            const lastMsg = currentBatch[currentBatch.length - 1];
+            if (!lastMsg || !lastMsg.timestamp) {
+              return undefined;
+            }
+            const t = lastMsg.timestamp;
+            return typeof t === "string" ? new Date(t).getTime() : t;
+          })(),
         );
       }
     } catch (e: unknown) {
@@ -940,7 +946,7 @@ ${newStory}
           role: (msg.role || "assistant") as "user" | "assistant",
           content: String(msg.text || (msg.content as string) || ""),
           timestamp: 0,
-        } as any);
+        } as AgentMessage);
 
         if (currentBatch.length > 0 && currentBatchTokens + msgTokens > safeTokenLimit) {
           currentStory = await this.updateNarrativeStory(
@@ -970,9 +976,14 @@ ${newStory}
           storyPath,
           agent,
           identityContext,
-          currentBatch[currentBatch.length - 1].timestamp
-            ? new Date(currentBatch[currentBatch.length - 1].timestamp!).getTime()
-            : undefined,
+          (() => {
+            const lastMsg = currentBatch[currentBatch.length - 1];
+            if (!lastMsg || !lastMsg.timestamp) {
+              return undefined;
+            }
+            const t = lastMsg.timestamp;
+            return typeof t === "string" ? new Date(t).getTime() : t;
+          })(),
         );
       }
     } catch (e: unknown) {

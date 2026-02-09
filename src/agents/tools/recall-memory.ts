@@ -30,7 +30,7 @@ export function createRecallMemoryTool(graphService: GraphService): AnyAgentTool
           });
         }
 
-        const formattedResults = memories.map((m: any) => m.content);
+        const formattedResults = memories.map((m: { content?: string }) => m.content);
 
         return jsonResult({
           message: `Found ${memories.length} relevant memories in the neural graph.`,

@@ -5,7 +5,7 @@
  * the configured model, with error-event detection and Copilot failover.
  */
 
-import { streamSimple, type Model, type Api } from "@mariozechner/pi-ai";
+import { streamSimple, type Model, type Api, type Context } from "@mariozechner/pi-ai";
 import type { AuthStorage, ModelRegistry } from "../pi-model-discovery.js";
 
 export interface SubconsciousAgent {
@@ -30,12 +30,22 @@ interface StreamResult {
  * Consume a pi-ai stream, collecting text and detecting error events.
  * Error events are emitted as regular chunks with `type === "error"`.
  */
+type StreamChunk = {
+  type?: string;
+  error?: { errorMessage?: string; message?: string };
+  reason?: string;
+  content?: string;
+  text?: string;
+  delta?: string | { text?: string; content?: Array<{ text?: string }> };
+  partial?: { content?: Array<{ text?: string }> };
+};
+
 async function consumeStream(s: AsyncIterable<unknown>, debug: boolean): Promise<StreamResult> {
   let collected = "";
   let streamError: string | undefined;
 
   for await (const chunk of s) {
-    const ch = chunk as any;
+    const ch = chunk as StreamChunk;
 
     // Detect error events emitted by the stream (not thrown as exceptions)
     if (ch.type === "error") {
@@ -52,11 +62,17 @@ async function consumeStream(s: AsyncIterable<unknown>, debug: boolean): Promise
       collected = ch.content;
     } else if (ch.text) {
       collected = ch.text;
-    } else if (ch.delta?.text) {
-      text = ch.delta.text;
+    } else if (typeof ch.delta === "object" && ch.delta !== null && "text" in ch.delta) {
+      text = ch.delta.text ?? "";
     } else if (typeof ch.delta === "string") {
       text = ch.delta;
-    } else if (ch.delta?.content?.[0]?.text) {
+    } else if (
+      typeof ch.delta === "object" &&
+      ch.delta !== null &&
+      "content" in ch.delta &&
+      Array.isArray(ch.delta.content) &&
+      ch.delta.content[0]?.text
+    ) {
       text = ch.delta.content[0].text;
     } else if (ch.partial?.content?.[0]?.text) {
       text = ch.partial.content[0].text;
@@ -111,8 +127,8 @@ export function createSubconsciousAgent(opts: SubconsciousAgentOptions): Subcons
         let stream = streamSimple(
           model,
           {
-            messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-          } as any,
+            messages: [{ role: "user", content: prompt }],
+          } as Context,
           {
             apiKey: key,
             temperature: 0,
@@ -150,8 +166,8 @@ export function createSubconsciousAgent(opts: SubconsciousAgentOptions): Subcons
           stream = streamSimple(
             failoverModel,
             {
-              messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-            } as any,
+              messages: [{ role: "user", content: prompt }],
+            } as Context,
             { apiKey: key, temperature: 0.3 },
           );
           result = await consumeStream(stream, debug);

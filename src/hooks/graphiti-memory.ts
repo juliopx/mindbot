@@ -12,7 +12,13 @@ export default {
     },
   },
 
-  async onEvent(event: string, payload: any) {
+  async onEvent(
+    event: string,
+    payload: {
+      message?: { text?: string };
+      reply?: { text?: string };
+    },
+  ) {
     const graphURL = process.env.GRAPHITI_MCP_URL || "http://localhost:8001";
     const graph = new GraphService(graphURL);
     // Use a stable global ID for the user's memory, ignoring the ephemeral sessionKey

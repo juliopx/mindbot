@@ -1,3 +1,4 @@
+import type { Command } from "commander";
 import { complete } from "@mariozechner/pi-ai";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +10,7 @@ import { SubconsciousService } from "../../services/memory/SubconsciousService.j
 import { ensureGraphitiDocker, installDocker } from "./docker.js";
 
 export default function register(api: any) {
+  // Keeping this as any for now since it's a generic API
   const config = api.config?.plugins?.entries?.["mind-memory"]?.config || {};
   const graphitiUrl = config.graphiti?.baseUrl || "http://localhost:8001";
   const debug = !!config.debug;
@@ -33,88 +35,94 @@ export default function register(api: any) {
   });
 
   // 1.1 Register CLI Command for Setup
-  api.registerCli(({ program }: any) => {
-    const parent = program.command("mind-memory").description("Mind Memory commands");
+  api.registerCli(
+    ({ program }: { program: Command }) => {
+      const parent = program.command("mind-memory").description("Mind Memory commands");
 
-    parent
-      .command("setup")
-      .description("Prepare the environment for Mind Memory (Installs Docker if missing)")
-      .option("--bootstrap", "Force generate historical autobiography (STORY.md) from legacy files")
-      .action(async (options: any) => {
-        const ok = await installDocker();
-        if (ok) {
-          api.logger.info("✅ Docker installation process finished. Now starting Graphiti...");
-          const pluginDir = path.dirname(fileURLToPath(import.meta.url));
-          await ensureGraphitiDocker(pluginDir);
+      parent
+        .command("setup")
+        .description("Prepare the environment for Mind Memory (Installs Docker if missing)")
+        .option(
+          "--bootstrap",
+          "Force generate historical autobiography (STORY.md) from legacy files",
+        )
+        .action(async (options: Record<string, unknown>) => {
+          const ok = await installDocker();
+          if (ok) {
+            api.logger.info("✅ Docker installation process finished. Now starting Graphiti...");
+            const pluginDir = path.dirname(fileURLToPath(import.meta.url));
+            await ensureGraphitiDocker(pluginDir);
 
-          if (options.bootstrap) {
-            api.logger.info("📖 Generating historical autobiography...");
-            const sessionId = "global-user-memory";
-            const agentId = resolveDefaultAgentId(api.config);
-            const workspaceDir = resolveAgentWorkspaceDir(api.config, agentId);
-            const memoryDir = config.memoryDir || path.join(workspaceDir, "memory");
-            const storyPath = path.join(path.dirname(memoryDir), "STORY.md");
+            if (options.bootstrap) {
+              api.logger.info("📖 Generating historical autobiography...");
+              const sessionId = "global-user-memory";
+              const agentId = resolveDefaultAgentId(api.config);
+              const workspaceDir = resolveAgentWorkspaceDir(api.config, agentId);
+              const memoryDir = config.memoryDir || path.join(workspaceDir, "memory");
+              const storyPath = path.join(path.dirname(memoryDir), "STORY.md");
 
-            // We need a lightweight agent for this
-            const agentDir = path.dirname(pluginDir);
-            const { model: llm, error } = resolveModel(
-              "github-copilot",
-              "gemini-3-flash-preview",
-              agentDir,
-              api.config,
-            );
-
-            if (llm) {
-              const { resolveApiKeyForProvider } = await import("../../agents/model-auth.js");
-              const auth = await resolveApiKeyForProvider({
-                provider: "github-copilot",
-                cfg: api.config,
+              // We need a lightweight agent for this
+              const agentDir = path.dirname(pluginDir);
+              const { model: llm, error } = resolveModel(
+                "github-copilot",
+                "gemini-3-flash-preview",
                 agentDir,
-              });
-
-              if (!auth.apiKey) {
-                api.logger.error(
-                  "❌ No GitHub token found. Please configure it or set GITHUB_TOKEN environment variable.",
-                );
-                return;
-              }
-
-              let runtimeKey = auth.apiKey;
-              if (auth.apiKey.startsWith("gh")) {
-                const { resolveCopilotApiToken } =
-                  await import("../../providers/github-copilot-token.js");
-                const copilotAuth = await resolveCopilotApiToken({ githubToken: auth.apiKey });
-                runtimeKey = copilotAuth.token;
-              }
-
-              // Simple bridge for the consolidation service
-              const bridge = {
-                complete: async (prompt: string) => {
-                  const res = await complete(
-                    llm as any,
-                    { messages: [{ role: "user", content: prompt }] } as any,
-                    { apiKey: runtimeKey },
-                  );
-                  return { text: (res as any).content || "" };
-                },
-              };
-              await (consolidator as any).bootstrapFromLegacyMemory(
-                sessionId,
-                storyPath,
-                bridge,
-                "You are a helpful assistant.",
-                100000,
+                api.config,
               );
-              api.logger.info("✅ Historical autobiography generated.");
-            } else {
-              api.logger.error(`❌ Could not resolve model: ${error}`);
+
+              if (llm) {
+                const { resolveApiKeyForProvider } = await import("../../agents/model-auth.js");
+                const auth = await resolveApiKeyForProvider({
+                  provider: "github-copilot",
+                  cfg: api.config,
+                  agentDir,
+                });
+
+                if (!auth.apiKey) {
+                  api.logger.error(
+                    "❌ No GitHub token found. Please configure it or set GITHUB_TOKEN environment variable.",
+                  );
+                  return;
+                }
+
+                let runtimeKey = auth.apiKey;
+                if (auth.apiKey.startsWith("gh")) {
+                  const { resolveCopilotApiToken } =
+                    await import("../../providers/github-copilot-token.js");
+                  const copilotAuth = await resolveCopilotApiToken({ githubToken: auth.apiKey });
+                  runtimeKey = copilotAuth.token;
+                }
+
+                // Simple bridge for the consolidation service
+                const bridge = {
+                  complete: async (prompt: string) => {
+                    const res = await complete(
+                      llm as any,
+                      { messages: [{ role: "user", content: prompt }] } as any,
+                      { apiKey: runtimeKey },
+                    );
+                    return { text: (res as any).content || "" };
+                  },
+                };
+                await (consolidator as any).bootstrapFromLegacyMemory(
+                  sessionId,
+                  storyPath,
+                  bridge,
+                  "You are a helpful assistant.",
+                  100000,
+                );
+                api.logger.info("✅ Historical autobiography generated.");
+              } else {
+                api.logger.error(`❌ Could not resolve model: ${error}`);
+              }
             }
+          } else {
+            api.logger.error("❌ Setup failed.");
           }
-        } else {
-          api.logger.error("❌ Setup failed.");
-        }
-      });
-  });
+        });
+    },
+    { commands: ["mind-memory"] },
+  );
 
   // 2. Register Gateway Methods for the core agent runner to call
   // This allows the runner to be decoupled from the internal implementation.
@@ -242,9 +250,9 @@ export default function register(api: any) {
             },
           ],
         };
-      } catch (e: any) {
+      } catch (e: unknown) {
         return {
-          content: [{ type: "text", text: `Error searching memory: ${e.message}` }],
+          content: [{ type: "text", text: `Error searching memory: ${(e as Error).message}` }],
           isError: true,
         };
       }

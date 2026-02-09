@@ -435,45 +435,22 @@ export async function compactEmbeddedPiSessionDirect(
           session.agent.replaceMessages(limited);
         }
 
-        // Extract Subconscious Agent helper (Inline for now to avoid refactor complexity)
-        // This mirrors the logic in run.ts
-        const { streamSimple } = await import("@mariozechner/pi-ai");
-        const subconsciousAgent = {
-          complete: async (prompt: string) => {
-            let fullText = "";
-            try {
-              const key = ((authStorage as any).getRuntimeApiKey?.(model.provider) ||
-                apiKeyInfo?.apiKey) as string;
-              if (!key) return { text: "" };
-              const stream = streamSimple(
-                model,
-                {
-                  messages: [{ role: "user", content: prompt, timestamp: Date.now() } as any],
-                  temperature: 0,
-                } as any,
-                { apiKey: key },
-              );
-              for await (const chunk of stream) {
-                const ch = chunk as any;
-                let text = "";
-                if (ch.content) fullText = ch.content;
-                else if (ch.text) fullText = ch.text;
-                else if (ch.delta?.text) text = ch.delta.text;
-
-                if (text) fullText += text;
-              }
-            } catch (e: any) {
-              // Ignore
-            }
-            return { text: fullText };
-          },
-        };
+        // Subconscious agent for narrative LLM calls (shared with run.ts)
+        const { createSubconsciousAgent } = await import("./subconscious-agent.js");
+        const subconsciousAgent = createSubconsciousAgent({
+          model,
+          authStorage,
+          modelRegistry,
+          debug: !!params.config?.plugins?.entries?.["mind-memory"]?.config?.debug,
+        });
 
         // Initialize Mind Services
         const mindConfig = params.config?.plugins?.entries?.["mind-memory"] as any;
         const debug = !!mindConfig?.config?.debug;
         const isMindEnabled =
           mindConfig?.enabled && (mindConfig?.config?.narrative?.enabled ?? true);
+
+        if (debug) process.stderr.write(`📖 [MIND] isMindEnabled=${isMindEnabled}\n`);
 
         if (isMindEnabled) {
           try {
@@ -500,6 +477,10 @@ export async function compactEmbeddedPiSessionDirect(
 
             // SYNC SESSION TO STORY BEFORE COMPACTION
             // This ensures we capture the detailed messages before they are summarized/pruned
+            if (debug)
+              process.stderr.write(
+                `📖 [MIND] Syncing ${session.messages.length} messages to ${storyPath} (limit: ${safeTokenLimit})\n`,
+              );
             await cons.syncStoryWithSession(
               session.messages,
               storyPath,
@@ -507,8 +488,11 @@ export async function compactEmbeddedPiSessionDirect(
               undefined,
               safeTokenLimit,
             );
-          } catch (e) {
-            console.warn("Mind consolidation failed during compaction:", e);
+            if (debug) process.stderr.write(`📖 [MIND] Story sync completed\n`);
+          } catch (e: any) {
+            process.stderr.write(
+              `❌ [MIND] Mind consolidation failed during compaction: ${e?.message || e}\n`,
+            );
           }
         }
 

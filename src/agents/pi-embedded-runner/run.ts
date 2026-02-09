@@ -1,4 +1,4 @@
-import { streamSimple } from "@mariozechner/pi-ai";
+import type { Api, Model } from "@mariozechner/pi-ai";
 import { estimateTokens } from "@mariozechner/pi-coding-agent";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 import fs from "node:fs/promises";
@@ -310,165 +310,14 @@ export async function runEmbeddedPiAgent(
       const debug = !!mindConfig?.config?.debug;
 
       // Create a lightweight LLM client for the subconscious (reusable for consolidation)
-      const subconsciousAgent: {
-        complete: (prompt: string) => Promise<{ text: string | null }>;
-        autoBootstrapHistory?: boolean;
-      } = {
-        complete: async (prompt: string) => {
-          let fullText = "";
-          try {
-            // Use authStorage.getApiKey() which checks runtimeOverrides first
-            // (where the exchanged Copilot token is stored), then falls back to
-            // auth.json, env vars, and fallback resolver.
-            const key = (await authStorage.getApiKey(model.provider)) as string;
-            if (!key) {
-              if (debug)
-                process.stderr.write(
-                  `  ⚠️ [DEBUG] Subconscious: No API key for ${model.provider}\n`,
-                );
-              return { text: "" };
-            }
-            // Note: Copilot headers (User-Agent, Editor-Version, etc.) are already
-            // set in the model's built-in headers from pi-ai. No extra headers needed.
-
-            // [MIND] Diagnostic Log 2.0: Trace exact provider/url to debug "model not supported"
-            if (debug) {
-              let baseUrl = model.baseUrl || "default";
-              // Attempt to unmask token base URL if available
-              if (!model.baseUrl && key && key.includes("proxy-ep=")) {
-                const match = key.match(/proxy-ep=([^;]+)/);
-                if (match) baseUrl = `[Derived] ${match[1]}`;
-              }
-              process.stderr.write(
-                `  🧩 [DEBUG] Subconscious stream open: ${model.provider}/${model.id} (API: ${model.api}) @ ${baseUrl}\n`,
-              );
-            }
-
-            // [MIND] Failover Logic: Retry with gpt-4o if primary model fails (e.g. Copilot error chunk)
-            const isCopilotProvider = /github-copilot/.test(model.provider || "");
-
-            const consumeStream = async (
-              s: any,
-            ): Promise<{ text: string; streamError?: string }> => {
-              let collected = "";
-              let streamError: string | undefined;
-              for await (const chunk of s) {
-                const ch = chunk as any;
-
-                // Detect error events emitted by the stream (not thrown as exceptions)
-                if (ch.type === "error") {
-                  streamError =
-                    ch.error?.errorMessage ||
-                    ch.error?.message ||
-                    ch.reason ||
-                    "unknown stream error";
-                  if (debug)
-                    process.stderr.write(
-                      `  🧩 [DEBUG] Subconscious stream error event: ${streamError}\n`,
-                    );
-                  break;
-                }
-
-                let text = "";
-                if (ch.content) {
-                  collected = ch.content;
-                } else if (ch.text) {
-                  collected = ch.text;
-                } else if (ch.delta?.text) {
-                  text = ch.delta.text;
-                } else if (typeof ch.delta === "string") {
-                  text = ch.delta;
-                } else if (ch.delta?.content?.[0]?.text) {
-                  text = ch.delta.content[0].text;
-                } else if (ch.partial?.content?.[0]?.text) {
-                  text = ch.partial.content[0].text;
-                }
-
-                if (text) {
-                  collected += text;
-                } else if (
-                  !ch.content &&
-                  !ch.text &&
-                  ch.type !== "start" &&
-                  ch.type !== "done" &&
-                  debug
-                ) {
-                  if (collected.length === 0) {
-                    process.stderr.write(
-                      `  🧩 [DEBUG] Subconscious chunk: ${JSON.stringify(ch).substring(0, 100)}...\n`,
-                    );
-                  }
-                }
-              }
-              return { text: collected, streamError };
-            };
-
-            let stream = streamSimple(
-              model,
-              {
-                messages: [{ role: "user", content: prompt, timestamp: Date.now() } as any],
-              } as any,
-              {
-                apiKey: key,
-                temperature: 0,
-                onPayload: debug
-                  ? (payload: any) => {
-                      process.stderr.write(
-                        `  🧩 [DEBUG] Subconscious payload: model=${payload?.model} api=${model.api} baseUrl=${model.baseUrl} keys=${Object.keys(payload || {}).join(",")}\n`,
-                      );
-                    }
-                  : undefined,
-              },
-            );
-
-            let result = await consumeStream(stream);
-
-            // If the primary model returned a stream error and this is Copilot, failover to gpt-4o
-            if (result.streamError && isCopilotProvider && result.text.length === 0) {
-              process.stderr.write(
-                `  ⚠️ [MIND] Model ${model.id} failed via Copilot (${result.streamError}). Failing over to gpt-4o...\n`,
-              );
-
-              const failoverModel = modelRegistry.find("github-copilot", "gpt-4o") ?? {
-                ...model,
-                id: "gpt-4o",
-                api: "openai-completions" as const,
-              };
-
-              process.stderr.write(
-                `  🔄 [MIND] Failover → ${failoverModel.id} (api: ${failoverModel.api})\n`,
-              );
-
-              stream = streamSimple(
-                failoverModel,
-                {
-                  messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-                } as any,
-                {
-                  apiKey: key,
-                  temperature: 0.3,
-                },
-              );
-              result = await consumeStream(stream);
-            }
-
-            fullText = result.text;
-            if (debug) {
-              if (fullText.length > 0) {
-                process.stderr.write(
-                  `\n  ✅ [DEBUG] Subconscious response received (${fullText.length} chars)\n`,
-                );
-              } else {
-                process.stderr.write(`\n  ⚠️ [DEBUG] Subconscious response EMPTY\n`);
-              }
-            }
-          } catch (e: any) {
-            if (debug) process.stderr.write(`  ❌ [DEBUG] Subconscious LLM error: ${e.message}\n`);
-          }
-          return { text: fullText };
-        },
+      const { createSubconsciousAgent } = await import("./subconscious-agent.js");
+      const subconsciousAgent = createSubconsciousAgent({
+        model,
+        authStorage,
+        modelRegistry,
+        debug,
         autoBootstrapHistory: mindConfig?.config?.narrative?.autoBootstrapHistory ?? false,
-      };
+      });
 
       const agentId = resolveSessionAgentId({
         sessionKey: params.sessionKey,

@@ -67,7 +67,6 @@ auth-profiles.json
 
 # Local untracked files
 .local/
-.vscode/
 IDENTITY.md
 USER.md
 .tgz
@@ -79,3 +78,9 @@ STORY_TEST.md
 # local tooling
 .serena/
 MISSION_CONTROL.md
+
+# Agent credentials and memory (NEVER COMMIT)
+/memory/
+.agent/*.json
+!.agent/workflows/
+local/

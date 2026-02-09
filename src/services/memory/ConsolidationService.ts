@@ -40,7 +40,13 @@ export class ConsolidationService {
   async bootstrapHistoricalEpisodes(
     sessionId: string,
     memoryDir: string,
-    sessionMessages: any[] = [],
+    sessionMessages: Array<{
+      role?: string;
+      text?: string;
+      content?: unknown;
+      timestamp?: unknown;
+      created_at?: unknown;
+    }> = [],
   ): Promise<void> {
     try {
       // Check if bootstrap has already been done using a flag file
@@ -95,13 +101,17 @@ export class ConsolidationService {
           const role = m.role || "unknown";
           let text = m.text || m.content || "";
           if (Array.isArray(text)) {
-            text = text.map((p: any) => (typeof p === "string" ? p : p.text || "")).join(" ");
+            text = text
+              .map((p: unknown) =>
+                typeof p === "string" ? p : (p as { text?: string }).text || "",
+              )
+              .join(" ");
           }
           if (!text) {
             continue;
           }
 
-          const ts = m.timestamp || m.created_at;
+          const ts = (m.timestamp || m.created_at) as string | number | Date;
           const date = ts ? new Date(ts) : new Date();
           if (date < earliestDate) {
             earliestDate = date;
@@ -109,11 +119,12 @@ export class ConsolidationService {
 
           const timeStr = date.toISOString().split("T")[1].substring(0, 5);
 
-          if (this.isHeartbeatMessage(text)) {
+          if (this.isHeartbeatMessage(text as string)) {
             continue;
           }
 
-          transcriptLines.push(`[${timeStr}] ${role}: ${text}`);
+          const textStr = typeof text === "string" ? text : JSON.stringify(text);
+          transcriptLines.push(`[${timeStr}] ${role}: ${textStr}`);
         }
 
         if (transcriptLines.length > 0) {
@@ -128,8 +139,10 @@ export class ConsolidationService {
 
       await fs.writeFile(bootstrapFlagPath, new Date().toISOString());
       this.log(`🏁 [MIND] Bootstrap complete. Episodes queued for Graphiti.`);
-    } catch (e: any) {
-      process.stderr.write(`⚠️ [MIND] Historical bootstrap failed: ${e.message}\n`);
+    } catch (e: unknown) {
+      process.stderr.write(
+        `⚠️ [MIND] Historical bootstrap failed: ${e instanceof Error ? e.message : String(e)}\n`,
+      );
     }
   }
 
@@ -139,10 +152,20 @@ export class ConsolidationService {
    */
   async updateNarrativeStory(
     sessionId: string,
-    oldMessages: any[] | string,
+    oldMessages:
+      | Array<{
+          role?: string;
+          text?: string;
+          content?: unknown;
+          timestamp?: number | string;
+          created_at?: string;
+          body?: string;
+          episode_body?: string;
+        }>
+      | string,
     currentStory: string,
     storyPath: string,
-    agent: any,
+    agent: { complete: (prompt: string) => Promise<{ text?: string | null }> },
     identityContext?: string,
     anchorTimestamp?: number,
   ): Promise<string> {
@@ -154,14 +177,20 @@ export class ConsolidationService {
 
     const transcript = Array.isArray(oldMessages)
       ? oldMessages
-          .map((m: any) => {
+          .map((m) => {
             const timestamp = m.timestamp ?? m.created_at ?? Date.now();
             const date = new Date(timestamp);
             // Handle Graphiti raw episode format { body: "..." } or Message { text/content }
-            let text = m.body || m.text || m.content || m.episode_body || "";
+            let text = m.body || m.text || (m.content as string) || m.episode_body || "";
             if (Array.isArray(text)) {
-              text = text
-                .map((c: any) => (typeof c === "string" ? c : (c.text ?? c.content ?? "")))
+              text = (text as unknown[])
+                .map((c: unknown) => {
+                  if (typeof c === "string") {
+                    return c;
+                  }
+                  const part = c as { text?: string; content?: string };
+                  return part.text ?? part.content ?? "";
+                })
                 .join(" ");
             }
             if (this.isHeartbeatMessage(text)) {
@@ -266,8 +295,10 @@ ${newStory}
         );
         return newStory;
       }
-    } catch (error: any) {
-      process.stderr.write(`❌ [MIND] Story update error: ${error.message}\n`);
+    } catch (error: unknown) {
+      process.stderr.write(
+        `❌ [MIND] Story update error: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
     }
 
     return currentStory;
@@ -333,9 +364,12 @@ ${newStory}
    */
   async checkAndConsolidate(
     sessionId: string,
-    agent: any,
+    agent: {
+      complete: (prompt: string) => Promise<{ text?: string }>;
+      autoBootstrapHistory?: boolean;
+    },
     storyPath: string,
-    chatHistory: any[],
+    chatHistory: Array<{ role: string; content: string | unknown[] }>,
     identityContext?: string,
     safeTokenLimit?: number,
     tokenThreshold: number = 5000,
@@ -451,13 +485,15 @@ ${newStory}
         let pendingTranscript = "";
         try {
           pendingTranscript = await fs.readFile(logPath, "utf-8");
-        } catch (e: any) {
-          process.stderr.write(`⚠️ [MIND] Could not read pending episodes log: ${e.message}\n`);
+        } catch (e: unknown) {
+          process.stderr.write(
+            `⚠️ [MIND] Could not read pending episodes log: ${e instanceof Error ? e.message : String(e)}\n`,
+          );
           // Fallback to graph if log is missing
           const graphEpisodes = await this.graph.getEpisodesSince(sessionId, lastUpdate);
           pendingTranscript = graphEpisodes
-            .filter((ep: any) => !this.isHeartbeatMessage(ep.body || ""))
-            .map((ep: any) => `[${ep.timestamp}] ${ep.body}`)
+            .filter((ep: { body?: string }) => !this.isHeartbeatMessage(ep.body || ""))
+            .map((ep: { body?: string; timestamp?: string }) => `[${ep.timestamp}] ${ep.body}`)
             .join("\n---\n");
         }
 
@@ -482,8 +518,10 @@ ${newStory}
           `⏳ [MIND] Accumulating Narrative... ${status.messages} messages (${status.tokens} / ${tokenThreshold} tokens) pending`,
         );
       }
-    } catch (e: any) {
-      process.stderr.write(`❌ [MIND] Batch consolidation check failed: ${e.message}\n`);
+    } catch (e: unknown) {
+      process.stderr.write(
+        `❌ [MIND] Batch consolidation check failed: ${e instanceof Error ? e.message : String(e)}\n`,
+      );
     }
   }
 
@@ -494,7 +532,7 @@ ${newStory}
   private async bootstrapFromLegacyMemory(
     sessionId: string,
     storyPath: string,
-    agent: any,
+    agent: { complete: (prompt: string) => Promise<{ text?: string }> },
     identityContext: string | undefined,
     safeTokenLimit: number,
   ): Promise<string> {
@@ -545,9 +583,9 @@ ${newStory}
 
           // 1. Process current batch
           currentStory = await this.updateNarrativeStory(
-            sessionId,
+            "global-sync-batch",
             currentBatch,
-            currentStory, // Evolve!
+            currentStory,
             storyPath,
             agent,
             identityContext,
@@ -587,8 +625,10 @@ ${newStory}
           latestTimestamp,
         );
       }
-    } catch (e: any) {
-      process.stderr.write(`⚠️ [MIND] Legacy bootstrap failed: ${e.message}\n`);
+    } catch (e: unknown) {
+      process.stderr.write(
+        `⚠️ [MIND] Legacy bootstrap failed: ${e instanceof Error ? e.message : String(e)}\n`,
+      );
     }
 
     return currentStory;
@@ -601,7 +641,7 @@ ${newStory}
   async syncGlobalNarrative(
     sessionsDir: string,
     storyPath: string,
-    agent: any,
+    agent: { complete: (prompt: string) => Promise<{ text?: string }> },
     identityContext?: string,
     safeTokenLimit: number = 50000,
     currentSessionFile?: string,
@@ -635,6 +675,13 @@ ${newStory}
       );
 
       this.log(`🌍 [MIND] Starting Global Narrative Sync (Limit: ${safeTokenLimit} tokens)...`);
+
+      // 1. Neural Resonance (Graph Retrieval)
+      // NOTE: This is a placeholder for future graph-based retrieval.
+      // For now, we rely on the story anchor timestamp.
+      // const entities =
+      //   agent && (await this.extractEntities(currentPrompt, agent)) ? await this.extractEntities(currentPrompt, agent) : [];
+      // let allResults: MemoryResult[] = [];
 
       // 1. Get Story Anchor Timestamp
       let lastProcessed = 0;
@@ -683,7 +730,7 @@ ${newStory}
       }
 
       // 3. Collect ONE combined transcript of NEW messages
-      const allNewMessages: any[] = [];
+      const allNewMessages: Array<{ timestamp: number; role?: string; text: string }> = [];
 
       for (const file of sortedFiles) {
         try {
@@ -695,7 +742,15 @@ ${newStory}
               continue;
             }
             try {
-              const entry = JSON.parse(trimmed);
+              const entry = JSON.parse(trimmed) as {
+                type: string;
+                timestamp: string | number;
+                message?: {
+                  role?: string;
+                  text?: string;
+                  content?: unknown;
+                };
+              };
               if (entry.type !== "message") {
                 continue;
               }
@@ -711,7 +766,10 @@ ${newStory}
               if (entryTs > lastProcessed) {
                 let text = entry.message?.text || "";
                 if (!text && Array.isArray(entry.message?.content)) {
-                  text = entry.message.content.find((c: any) => c.type === "text")?.text || "";
+                  text =
+                    (entry.message.content as Array<{ type?: string; text?: string }>).find(
+                      (c) => c.type === "text",
+                    )?.text || "";
                 }
                 if (!text && typeof entry.message?.content === "string") {
                   text = entry.message.content;
@@ -727,8 +785,10 @@ ${newStory}
               }
             } catch {}
           }
-        } catch (e: any) {
-          this.log(`⚠️ [MIND] Failed to read session ${file.path}: ${e.message}`);
+        } catch (e: unknown) {
+          this.log(
+            `⚠️ [MIND] Failed to read session ${file.path}: ${e instanceof Error ? e.message : String(e)}`,
+          );
         }
       }
 
@@ -742,16 +802,16 @@ ${newStory}
 
       // 5. Update Story (Chunked Strategy)
       let currentStory = await fs.readFile(storyPath, "utf-8").catch(() => "");
-      let currentBatch: any[] = [];
+      let currentBatch: Array<{ timestamp: number; role?: string; text: string }> = [];
       let currentBatchTokens = 0;
 
       for (let i = 0; i < allNewMessages.length; i++) {
         const msg = allNewMessages[i];
         const msgTokens = estimateTokens({
-          role: msg.role,
+          role: (msg.role || "assistant") as "user" | "assistant",
           content: msg.text,
           timestamp: 0,
-        });
+        } as any);
 
         // Trigger update if adding this message exceeds the safe limit
         if (currentBatch.length > 0 && currentBatchTokens + msgTokens > safeTokenLimit) {
@@ -760,7 +820,7 @@ ${newStory}
           );
           currentStory = await this.updateNarrativeStory(
             "global-sync-batch",
-            currentBatch,
+            currentBatch as Array<{ role: string; text: string; timestamp: number }>,
             currentStory,
             storyPath,
             agent,
@@ -787,11 +847,15 @@ ${newStory}
           storyPath,
           agent,
           identityContext,
-          currentBatch[currentBatch.length - 1].timestamp,
+          currentBatch[currentBatch.length - 1].timestamp
+            ? new Date(currentBatch[currentBatch.length - 1].timestamp!).getTime()
+            : undefined,
         );
       }
-    } catch (e: any) {
-      process.stderr.write(`❌ [MIND] Global Sync failed: ${e.message}\n`);
+    } catch (e: unknown) {
+      process.stderr.write(
+        `❌ [MIND] Global Sync failed: ${e instanceof Error ? e.message : String(e)}\n`,
+      );
     } finally {
       // Release file lock
       try {
@@ -805,9 +869,15 @@ ${newStory}
    * Used during compaction or shutdown.
    */
   async syncStoryWithSession(
-    messages: any[],
+    messages: Array<{
+      role: string;
+      text?: string;
+      content?: unknown;
+      timestamp?: number | string;
+      created_at?: string;
+    }>,
     storyPath: string,
-    agent: any,
+    agent: { complete: (prompt: string) => Promise<{ text?: string }> },
     identityContext?: string,
     safeTokenLimit: number = 50000,
   ): Promise<void> {
@@ -839,7 +909,7 @@ ${newStory}
         }
         let text = m.text || "";
         if (!text && Array.isArray(m.content)) {
-          text = m.content.find((c: any) => c.type === "text")?.text || "";
+          text = m.content.find((c: { type?: string }) => c.type === "text")?.text || "";
         }
         if (!text && typeof m.content === "string") {
           text = m.content;
@@ -856,27 +926,34 @@ ${newStory}
       );
 
       // 3. Update (Chunked Strategy)
-      const latestTs = newMessages[newMessages.length - 1].timestamp ?? Date.now();
 
-      let currentBatch: any[] = [];
+      let currentBatch: Array<{
+        role: string;
+        text?: string;
+        content?: unknown;
+        timestamp?: number | string;
+      }> = [];
       let currentBatchTokens = 0;
 
       for (const msg of newMessages) {
         const msgTokens = estimateTokens({
-          role: msg.role,
-          content: msg.text || msg.content || "",
+          role: (msg.role || "assistant") as "user" | "assistant",
+          content: String(msg.text || (msg.content as string) || ""),
           timestamp: 0,
-        });
+        } as any);
 
         if (currentBatch.length > 0 && currentBatchTokens + msgTokens > safeTokenLimit) {
           currentStory = await this.updateNarrativeStory(
             "active-session-batch",
-            currentBatch,
+            currentBatch as Array<{ role: string; text: string; timestamp: number | string }>,
             currentStory,
             storyPath,
             agent,
             identityContext,
-            currentBatch[currentBatch.length - 1].timestamp ?? Date.now(),
+            (() => {
+              const t = currentBatch[currentBatch.length - 1].timestamp;
+              return typeof t === "string" ? new Date(t).getTime() : t;
+            })(),
           );
           currentBatch = [];
           currentBatchTokens = 0;
@@ -893,11 +970,15 @@ ${newStory}
           storyPath,
           agent,
           identityContext,
-          latestTs,
+          currentBatch[currentBatch.length - 1].timestamp
+            ? new Date(currentBatch[currentBatch.length - 1].timestamp!).getTime()
+            : undefined,
         );
       }
-    } catch (e: any) {
-      process.stderr.write(`❌ [MIND] Session Sync failed: ${e.message}\n`);
+    } catch (e: unknown) {
+      process.stderr.write(
+        `❌ [MIND] Session Sync failed: ${e instanceof Error ? e.message : String(e)}\n`,
+      );
     }
   }
 
@@ -905,13 +986,15 @@ ${newStory}
    * Processes raw search results from Zep into a human-friendly "Flashback" format.
    * Calculates CURRENT relative time based on embedded or metadata timestamps.
    */
-  processFlashbacks(results: any[]): string {
+  processFlashbacks(
+    results: Array<{ message?: { content?: string; created_at?: string }; text?: string }>,
+  ): string {
     if (!results || results.length === 0) {
       return "";
     }
 
     const context = results
-      .map((m: any) => {
+      .map((m) => {
         let content = m.message?.content || m.text || "";
         let finalDate = m.message?.created_at ? new Date(m.message?.created_at) : new Date();
 

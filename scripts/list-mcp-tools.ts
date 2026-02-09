@@ -10,26 +10,25 @@ async function main() {
       jsonrpc: "2.0",
       id: "3",
       method: "tools/list",
-      params: {}
+      params: {},
     };
 
     const res = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream",
-        "mcp-session-id": mcpId
+        Accept: "application/json, text/event-stream",
+        "mcp-session-id": mcpId,
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     });
 
     const text = await res.text();
     console.log("--- AVAILABLE TOOLS ---\n");
     console.log(text);
-
   } catch (e: any) {
     console.error(`Error: ${e.message}`);
   }
 }
 
-main();
+void main();

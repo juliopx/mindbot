@@ -15,10 +15,9 @@ async function main() {
     const facts = await graph.searchFacts(sessionId, query);
     console.log("\n--- FACTS ---");
     console.log(JSON.stringify(facts, null, 2));
-
   } catch (e: any) {
     console.error(`Error: ${e.message}`);
   }
 }
 
-main();
+void main();

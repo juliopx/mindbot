@@ -31,10 +31,9 @@ async function main() {
       console.log(`\n[${i + 1}] (${time})`);
       console.log(body);
     });
-
   } catch (e: any) {
     console.error(`\n❌ Inspection failed: ${e.message}`);
   }
 }
 
-main();
+void main();

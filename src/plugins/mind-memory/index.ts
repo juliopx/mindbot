@@ -9,7 +9,27 @@ import { GraphService } from "../../services/memory/GraphService.js";
 import { SubconsciousService } from "../../services/memory/SubconsciousService.js";
 import { ensureGraphitiDocker, installDocker } from "./docker.js";
 
-export default function register(api: any) {
+interface PluginApi {
+  config: Record<string, any>;
+  logger: {
+    info: (msg: string) => void;
+    error: (msg: string) => void;
+    warn: (msg: string) => void;
+  };
+  registerService: (service: {
+    id: string;
+    start: () => Promise<void>;
+    stop: () => Promise<void>;
+  }) => void;
+  registerCli: (cb: (ctx: { program: Command }) => void, options: { commands: string[] }) => void;
+  registerGatewayMethod: (
+    id: string,
+    cb: (ctx: { params: any; respond: (ok: boolean, payload?: any) => void }) => Promise<void>,
+  ) => void;
+  registerTool: (tool: any) => void;
+}
+
+export default function register(api: PluginApi) {
   // Keeping this as any for now since it's a generic API
   const config = api.config?.plugins?.entries?.["mind-memory"]?.config || {};
   const graphitiUrl = config.graphiti?.baseUrl || "http://localhost:8001";
@@ -101,10 +121,14 @@ export default function register(api: any) {
                       { messages: [{ role: "user", content: prompt }] } as any,
                       { apiKey: runtimeKey },
                     );
-                    return { text: (res as any).content || "" };
+                    return { text: (res as unknown as { content?: string }).content || "" };
                   },
                 };
-                await (consolidator as any).bootstrapFromLegacyMemory(
+                await (
+                  consolidator as unknown as {
+                    bootstrapFromLegacyMemory: (...a: unknown[]) => Promise<void>;
+                  }
+                ).bootstrapFromLegacyMemory(
                   sessionId,
                   storyPath,
                   bridge,
@@ -128,7 +152,13 @@ export default function register(api: any) {
   // This allows the runner to be decoupled from the internal implementation.
   api.registerGatewayMethod(
     "narrative.getFlashbacks",
-    async ({ params, respond }: { params: any; respond: (ok: boolean, payload?: any) => void }) => {
+    async ({
+      params,
+      respond,
+    }: {
+      params: { prompt: string; oldestContextTimestamp?: string; llmClient: unknown };
+      respond: (ok: boolean, payload?: unknown) => void;
+    }) => {
       const { prompt, oldestContextTimestamp, llmClient } = params;
       // Use stable global ID to ensure memory persists across chat sessions
       const sessionId = "global-user-memory";
@@ -148,8 +178,8 @@ export default function register(api: any) {
           oldestContextTimestamp ? new Date(oldestContextTimestamp) : undefined,
         );
         respond(true, { flashbacks });
-      } catch (e: any) {
-        respond(false, { error: e.message });
+      } catch (e: unknown) {
+        respond(false, { error: e instanceof Error ? e.message : String(e) });
       }
     },
   );
@@ -158,42 +188,60 @@ export default function register(api: any) {
 
   api.registerGatewayMethod(
     "narrative.addEpisode",
-    async ({ params, respond }: { params: any; respond: (ok: boolean, payload?: any) => void }) => {
+    async ({
+      params,
+      respond,
+    }: {
+      params: { text: string };
+      respond: (ok: boolean, payload?: unknown) => void;
+    }) => {
       const { text } = params;
       const sessionId = "global-user-memory";
       try {
         await graphService.addEpisode(sessionId, text);
         respond(true, { ok: true });
-      } catch (e: any) {
-        respond(false, { error: e.message });
+      } catch (e: unknown) {
+        respond(false, { error: e instanceof Error ? e.message : String(e) });
       }
     },
   );
 
   api.registerGatewayMethod(
     "narrative.searchNodes",
-    async ({ params, respond }: { params: any; respond: (ok: boolean, payload?: any) => void }) => {
+    async ({
+      params,
+      respond,
+    }: {
+      params: { query: string };
+      respond: (ok: boolean, payload?: unknown) => void;
+    }) => {
       const { query } = params;
       const sessionId = "global-user-memory";
       try {
         const nodes = await graphService.searchNodes(sessionId, query);
         respond(true, { nodes });
-      } catch (e: any) {
-        respond(false, { error: e.message });
+      } catch (e: unknown) {
+        respond(false, { error: e instanceof Error ? e.message : String(e) });
       }
     },
   );
 
   api.registerGatewayMethod(
     "narrative.searchFacts",
-    async ({ params, respond }: { params: any; respond: (ok: boolean, payload?: any) => void }) => {
+    async ({
+      params,
+      respond,
+    }: {
+      params: { query: string };
+      respond: (ok: boolean, payload?: unknown) => void;
+    }) => {
       const { query } = params;
       const sessionId = "global-user-memory";
       try {
         const facts = await graphService.searchFacts(sessionId, query);
         respond(true, { facts });
-      } catch (e: any) {
-        respond(false, { error: e.message });
+      } catch (e: unknown) {
+        respond(false, { error: e instanceof Error ? e.message : String(e) });
       }
     },
   );
@@ -234,9 +282,10 @@ export default function register(api: any) {
         // Simple formatting for the tool result
         const lines = combined
           .map((item) => {
-            const content = item.content || item.fact || JSON.stringify(item);
+            const content =
+              (item.content as string) || (item.fact as string) || JSON.stringify(item);
             const date = item.timestamp
-              ? `[${new Date(item.timestamp).toISOString().split("T")[0]}] `
+              ? `[${new Date(item.timestamp as string | number | Date).toISOString().split("T")[0]}] `
               : "";
             return `- ${date}${content}`;
           })

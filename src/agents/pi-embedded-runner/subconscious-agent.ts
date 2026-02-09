@@ -5,7 +5,7 @@
  * the configured model, with error-event detection and Copilot failover.
  */
 
-import { streamSimple } from "@mariozechner/pi-ai";
+import { streamSimple, type Model, type Api } from "@mariozechner/pi-ai";
 import type { AuthStorage, ModelRegistry } from "../pi-model-discovery.js";
 
 export interface SubconsciousAgent {
@@ -14,7 +14,7 @@ export interface SubconsciousAgent {
 }
 
 export interface SubconsciousAgentOptions {
-  model: any;
+  model: Model<Api>;
   authStorage: AuthStorage;
   modelRegistry: ModelRegistry;
   debug?: boolean;
@@ -30,12 +30,12 @@ interface StreamResult {
  * Consume a pi-ai stream, collecting text and detecting error events.
  * Error events are emitted as regular chunks with `type === "error"`.
  */
-async function consumeStream(s: any, debug: boolean): Promise<StreamResult> {
+async function consumeStream(s: AsyncIterable<unknown>, debug: boolean): Promise<StreamResult> {
   let collected = "";
   let streamError: string | undefined;
 
   for await (const chunk of s) {
-    const ch = chunk;
+    const ch = chunk as any;
 
     // Detect error events emitted by the stream (not thrown as exceptions)
     if (ch.type === "error") {
@@ -111,15 +111,16 @@ export function createSubconsciousAgent(opts: SubconsciousAgentOptions): Subcons
         let stream = streamSimple(
           model,
           {
-            messages: [{ role: "user", content: prompt, timestamp: Date.now() } as any],
+            messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
           } as any,
           {
             apiKey: key,
             temperature: 0,
             onPayload: debug
-              ? (payload: any) => {
+              ? (payload: unknown) => {
+                  const p = payload as Record<string, unknown>;
                   process.stderr.write(
-                    `  🧩 [DEBUG] Subconscious payload: model=${payload?.model} api=${model.api} baseUrl=${model.baseUrl} keys=${Object.keys(payload || {}).join(",")}\n`,
+                    `  🧩 [DEBUG] Subconscious payload: model=${String(p["model"])} api=${model.api} baseUrl=${model.baseUrl} keys=${Object.keys(p || {}).join(",")}\n`,
                   );
                 }
               : undefined,
@@ -134,11 +135,13 @@ export function createSubconsciousAgent(opts: SubconsciousAgentOptions): Subcons
             `  ⚠️ [MIND] Model ${model.id} failed via Copilot (${result.streamError}). Failing over to gpt-4o...\n`,
           );
 
-          const failoverModel = modelRegistry.find("github-copilot", "gpt-4o") ?? {
-            ...model,
-            id: "gpt-4o",
-            api: "openai-completions" as const,
-          };
+          const failoverModel =
+            (modelRegistry.find("github-copilot", "gpt-4o") as Model<Api> | null) ??
+            ({
+              ...model,
+              id: "gpt-4o",
+              api: "openai-completions",
+            } as Model<Api>);
 
           process.stderr.write(
             `  🔄 [MIND] Failover → ${failoverModel.id} (api: ${failoverModel.api})\n`,
@@ -164,9 +167,10 @@ export function createSubconsciousAgent(opts: SubconsciousAgentOptions): Subcons
             process.stderr.write(`\n  ⚠️ [DEBUG] Subconscious response EMPTY\n`);
           }
         }
-      } catch (e: any) {
+      } catch (e: unknown) {
+        const errorMessage = e instanceof Error ? e.message : String(e);
         if (debug) {
-          process.stderr.write(`  ❌ [DEBUG] Subconscious LLM error: ${e.message}\n`);
+          process.stderr.write(`  ❌ [DEBUG] Subconscious LLM error: ${errorMessage}\n`);
         }
       }
       return { text: fullText };

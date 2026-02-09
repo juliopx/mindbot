@@ -7,9 +7,9 @@ import { applyExclusiveSlotSelection } from "../plugins/slots.js";
 import { buildPluginStatusReport } from "../plugins/status.js";
 import { guardCancel } from "./onboard-helpers.js";
 
-function getNestedValue(obj: any, path: string): any {
+function getNestedValue(obj: Record<string, unknown>, path: string): unknown {
   const keys = path.split(".");
-  let current = obj;
+  let current: any = obj;
   for (const key of keys) {
     if (current === undefined || current === null || typeof current !== "object") {
       return undefined;
@@ -19,9 +19,9 @@ function getNestedValue(obj: any, path: string): any {
   return current;
 }
 
-function setNestedValue(obj: any, path: string, value: any): void {
+function setNestedValue(obj: Record<string, unknown>, path: string, value: unknown): void {
   const keys = path.split(".");
-  let current = obj;
+  let current: any = obj;
   for (let i = 0; i < keys.length - 1; i++) {
     const key = keys[i];
     if (!(key in current) || current[key] === null || typeof current[key] !== "object") {
@@ -32,12 +32,12 @@ function setNestedValue(obj: any, path: string, value: any): void {
   current[keys[keys.length - 1]] = value;
 }
 
-function getSchemaDefault(schema: any, path: string): any {
+function getSchemaDefault(schema: Record<string, unknown>, path: string): unknown {
   if (!schema || !schema.properties) {
     return undefined;
   }
   const keys = path.split(".");
-  let current = schema;
+  let current: any = schema;
   for (const key of keys) {
     if (!current.properties || !current.properties[key]) {
       return undefined;
@@ -54,10 +54,15 @@ async function promptPluginEntryConfig(
   prompter: WizardPrompter,
 ): Promise<OpenClawConfig> {
   const pluginId = plugin.id;
-  const entry = (currentConfig.plugins as any)?.entries?.[pluginId] ?? {};
+  const entry =
+    (
+      currentConfig.plugins as unknown as {
+        entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }>;
+      }
+    )?.entries?.[pluginId] ?? {};
   const isEnabled = entry.enabled ?? false;
 
-  const report = buildPluginStatusReport({ config: currentConfig as any });
+  const report = buildPluginStatusReport({ config: currentConfig as unknown as OpenClawConfig });
 
   let toggleEnabled = await prompter.confirm({
     message: `Enable plugin "${plugin.name || pluginId}"?`,
@@ -69,14 +74,19 @@ async function promptPluginEntryConfig(
 
   if (toggleEnabled && plugin.kind) {
     const slotResult = applyExclusiveSlotSelection({
-      config: currentConfig as any,
+      config: currentConfig as unknown as OpenClawConfig,
       selectedId: pluginId,
       selectedKind: plugin.kind,
       registry: report,
     });
     if (slotResult.changed) {
-      nextConfig = slotResult.config as any;
-      nextEntry = (nextConfig.plugins as any)?.entries?.[pluginId] ?? nextEntry;
+      nextConfig = slotResult.config as unknown as OpenClawConfig;
+      nextEntry =
+        (
+          nextConfig.plugins as unknown as {
+            entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }>;
+          }
+        )?.entries?.[pluginId] ?? nextEntry;
       if (slotResult.warnings.length > 0) {
         for (const w of slotResult.warnings) {
           await prompter.note(w, "Slot Selection");
@@ -139,9 +149,9 @@ async function promptPluginEntryConfig(
   return {
     ...nextConfig,
     plugins: {
-      ...(nextConfig.plugins as any),
+      ...(nextConfig.plugins as Record<string, unknown>),
       entries: {
-        ...(nextConfig.plugins as any)?.entries,
+        ...(nextConfig.plugins as unknown as { entries?: Record<string, unknown> })?.entries,
         [pluginId]: nextEntry,
       },
     },
@@ -153,7 +163,7 @@ export async function promptPluginsConfig(
   runtime: RuntimeEnv,
   prompter: WizardPrompter,
 ): Promise<OpenClawConfig> {
-  const report = buildPluginStatusReport({ config: cfg as any });
+  const report = buildPluginStatusReport({ config: cfg as unknown as OpenClawConfig });
   const plugins = report.plugins;
 
   if (plugins.length === 0) {
@@ -165,7 +175,9 @@ export async function promptPluginsConfig(
 
   while (true) {
     const options = plugins.map((p) => {
-      const isEnabled = (nextConfig.plugins as any)?.entries?.[p.id]?.enabled ?? p.enabled;
+      const isEnabled =
+        (nextConfig.plugins as unknown as { entries?: Record<string, { enabled?: boolean }> })
+          ?.entries?.[p.id]?.enabled ?? p.enabled;
       const status = isEnabled ? "✅ enabled" : "❌ disabled";
       return {
         value: p.id,

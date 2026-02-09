@@ -1,5 +1,5 @@
-import { GraphService } from "./src/services/GraphService.js";
 import * as dotenv from "dotenv";
+import { GraphService } from "./src/services/GraphService.js";
 dotenv.config();
 
 const sessionId = process.argv[2];
@@ -29,4 +29,4 @@ async function debugStory() {
   }
 }
 
-debugStory();
+void debugStory();

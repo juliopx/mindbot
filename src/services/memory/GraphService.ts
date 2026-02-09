@@ -12,6 +12,46 @@ type GraphitiTask = {
   name: string;
 };
 
+export interface MemoryResult {
+  content: string;
+  timestamp: string;
+  _sourceQuery?: string;
+  _boosted?: boolean;
+  uuid?: string;
+  message?: {
+    uuid?: string;
+    content?: string;
+    created_at?: string;
+    createdAt?: string;
+  };
+  text?: string;
+}
+
+interface McpToolResult {
+  result?: {
+    content?: Array<{ text: string }>;
+  };
+  content?: Array<{ text: string }>;
+}
+
+interface GraphNode {
+  name?: string;
+  summary?: string;
+  created_at?: string;
+}
+
+interface GraphFact {
+  source_name?: string;
+  fact?: string;
+  target_name?: string;
+  created_at?: string;
+}
+
+interface GraphEpisode {
+  created_at: string;
+  body?: string;
+}
+
 /**
  * GraphService handles the interaction with the knowledge graph.
  * Connects to the Graphiti MCP Server via HTTP transport.
@@ -74,8 +114,10 @@ export class GraphService {
 
       try {
         await task.execute();
-      } catch (e: any) {
-        process.stderr.write(`❌ [GRAPH] Background task '${task.name}' failed: ${e.message}\n`);
+      } catch (e: unknown) {
+        process.stderr.write(
+          `❌ [GRAPH] Background task '${task.name}' failed: ${e instanceof Error ? e.message : String(e)}\n`,
+        );
       }
     }
 
@@ -145,11 +187,13 @@ export class GraphService {
 
       this.log(`🔑 [GRAPH] MCP Session Authenticated: ${this.mcpSessionId}`);
       return this.mcpSessionId;
-    } catch (e: any) {
-      if (e.name === "AbortError") {
+    } catch (e: unknown) {
+      if (e instanceof Error && e.name === "AbortError") {
         throw new Error(`MCP Initialization timed out (5s)`, { cause: e });
       }
-      throw new Error(`MCP Initialization failed: ${e.message}`, { cause: e });
+      throw new Error(`MCP Initialization failed: ${e instanceof Error ? e.message : String(e)}`, {
+        cause: e,
+      });
     }
   }
 
@@ -162,10 +206,10 @@ export class GraphService {
    */
   private async callMcpTool(
     name: string,
-    args: any,
+    args: Record<string, unknown>,
     timeoutMs: number = 5000,
     retryCount: number = 0,
-  ): Promise<any> {
+  ): Promise<McpToolResult | null> {
     const url = `${this.mcpBaseURL}/mcp`;
 
     try {
@@ -213,9 +257,9 @@ export class GraphService {
       }
 
       return this.parseSSEResult(text);
-    } catch (e: any) {
+    } catch (e: unknown) {
       // Bubble up abort errors or max retries
-      if (e.name === "AbortError") {
+      if (e instanceof Error && e.name === "AbortError") {
         throw e;
       }
       throw e;
@@ -225,17 +269,15 @@ export class GraphService {
   /**
    * Parses a single SSE response text into a JSON object.
    */
-  private parseSSEResult(text: string): any {
+  private parseSSEResult(text: string): McpToolResult | null {
     const lines = text.split("\n");
     for (const line of lines) {
       if (line.startsWith("data: ")) {
         try {
           const json = JSON.parse(line.substring(6));
           // Filter out error-like messages or empty results that shouldn't be treated as memories
-          if (json.result?.content?.[0] === "No relevant nodes found") {
-            return null;
-          }
-          if (json.content?.[0]?.text?.includes("No relevant nodes found")) {
+          const content = json.result?.content || json.content;
+          if (content?.[0]?.text?.includes("No relevant nodes found")) {
             return null;
           }
           return json;
@@ -278,8 +320,10 @@ export class GraphService {
           10000, // 10s timeout
         );
         this.log(`📼 [GRAPH] Episode stored in Graphiti (${text.length} chars)`);
-      } catch (e: any) {
-        process.stderr.write(`⚠️ [GRAPH] Episode storage failed: ${e.message}\n`);
+      } catch (e: unknown) {
+        process.stderr.write(
+          `⚠️ [GRAPH] Episode storage failed: ${e instanceof Error ? e.message : String(e)}\n`,
+        );
       }
     });
   }
@@ -288,7 +332,7 @@ export class GraphService {
    * Breadth-First Search (BFS) using search_nodes tool.
    * This retrieves node-level summaries and context.
    */
-  async searchNodes(sessionId: string | string[], query: string): Promise<any[]> {
+  async searchNodes(sessionId: string | string[], query: string): Promise<MemoryResult[]> {
     const groupIds = Array.isArray(sessionId) ? sessionId : [sessionId];
 
     try {
@@ -302,24 +346,31 @@ export class GraphService {
         return [];
       }
 
-      let results = data.result?.content || data.content || [];
+      const content = data.result?.content || data.content || [];
+      const results = content as Array<Record<string, unknown>>;
 
       // Filter out internal Graphiti "no results" objects
-      results = results.filter((c: any) => {
+      const filteredResults = results.filter((c: Record<string, unknown>) => {
         const str = JSON.stringify(c);
         return !str.includes("No relevant nodes found") && !str.includes("no_relevant_nodes");
       });
 
-      const allMatches: any[] = [];
-      for (const c of results) {
+      const allMatches: Array<{
+        content: string;
+        timestamp: string;
+        _sourceQuery: string;
+        _boosted: boolean;
+      }> = [];
+      for (const c of filteredResults) {
         try {
-          if (c.text) {
-            const parsed = JSON.parse(c.text);
+          const cText = c.text as string | undefined;
+          if (cText) {
+            const parsed = JSON.parse(cText) as { nodes?: GraphNode[] };
             if (parsed.nodes && Array.isArray(parsed.nodes)) {
               for (const n of parsed.nodes) {
                 allMatches.push({
                   content: n.summary || n.name || "Unknown memory",
-                  timestamp: n.created_at || c.created_at,
+                  timestamp: (n.created_at || c.created_at) as string,
                   _sourceQuery: `Graph Nodes (${query.substring(0, 30)}...)`,
                   _boosted: true,
                 });
@@ -328,15 +379,18 @@ export class GraphService {
             }
           }
           allMatches.push({
-            content: c.summary || c.name || (typeof c === "string" ? c : JSON.stringify(c)),
-            timestamp: c.created_at,
+            content:
+              (c.summary as string) ||
+              (c.name as string) ||
+              (typeof c === "string" ? c : JSON.stringify(c)),
+            timestamp: c.created_at as string,
             _sourceQuery: `Graph Nodes (${query.substring(0, 30)}...)`,
             _boosted: true,
           });
         } catch {
           allMatches.push({
             content: typeof c === "string" ? c : JSON.stringify(c),
-            timestamp: c.created_at,
+            timestamp: c.created_at as string,
             _sourceQuery: `Graph Nodes (${query.substring(0, 30)}...)`,
             _boosted: true,
           });
@@ -344,12 +398,14 @@ export class GraphService {
       }
 
       return allMatches;
-    } catch (e: any) {
-      if (e.name === "AbortError") {
+    } catch (e: unknown) {
+      if (e instanceof Error && e.name === "AbortError") {
         process.stderr.write(`⚠️ [GRAPH] Node Search timed out (5s)\n`);
         return [];
       }
-      process.stderr.write(`❌ [GRAPH] Node Search error: ${e.message}\n`);
+      process.stderr.write(
+        `❌ [GRAPH] Node Search error: ${e instanceof Error ? e.message : String(e)}\n`,
+      );
       return [];
     }
   }
@@ -358,7 +414,7 @@ export class GraphService {
    * Search specifically for facts (edges) in the graph.
    * This is useful for finding specific relational data.
    */
-  async searchFacts(sessionId: string | string[], query: string): Promise<any[]> {
+  async searchFacts(sessionId: string | string[], query: string): Promise<MemoryResult[]> {
     const groupIds = Array.isArray(sessionId) ? sessionId : [sessionId];
 
     try {
@@ -371,26 +427,33 @@ export class GraphService {
         return [];
       }
 
-      let results = data.result?.content || data.content || [];
+      const content = data.result?.content || data.content || [];
+      const results = content as Array<Record<string, unknown>>;
 
       // Filter out internal Graphiti "no results" objects
-      results = results.filter((c: any) => {
+      const filteredResults = results.filter((c: Record<string, unknown>) => {
         const str = JSON.stringify(c);
         return !str.includes("No relevant facts found") && !str.includes("no_relevant_facts");
       });
 
-      const allMatches: any[] = [];
-      for (const c of results) {
+      const allMatches: Array<{
+        content: string;
+        timestamp: string;
+        _sourceQuery: string;
+        _boosted: boolean;
+      }> = [];
+      for (const c of filteredResults) {
         try {
-          if (c.text) {
-            const parsed = JSON.parse(c.text);
+          const cText = c.text as string | undefined;
+          if (cText) {
+            const parsed = JSON.parse(cText) as { facts?: GraphFact[] };
             if (parsed.facts && Array.isArray(parsed.facts)) {
               for (const f of parsed.facts) {
                 allMatches.push({
                   content:
                     `${f.source_name || ""} ${f.fact || ""} ${f.target_name || ""}`.trim() ||
                     "Unknown fact",
-                  timestamp: f.created_at || c.created_at,
+                  timestamp: String(f.created_at || c.created_at),
                   _sourceQuery: `Graph Facts (${query.substring(0, 30)}...)`,
                   _boosted: true,
                 });
@@ -399,15 +462,18 @@ export class GraphService {
             }
           }
           allMatches.push({
-            content: c.fact || (typeof c === "string" ? c : JSON.stringify(c)),
-            timestamp: c.created_at,
+            content:
+              (c.content as string) ||
+              (c.fact as string) ||
+              (typeof c === "string" ? c : JSON.stringify(c)),
+            timestamp: String(c.created_at),
             _sourceQuery: `Graph Facts (${query.substring(0, 30)}...)`,
             _boosted: true,
           });
         } catch {
           allMatches.push({
             content: typeof c === "string" ? c : JSON.stringify(c),
-            timestamp: c.created_at,
+            timestamp: String(c.created_at),
             _sourceQuery: `Graph Facts (${query.substring(0, 30)}...)`,
             _boosted: true,
           });
@@ -415,12 +481,14 @@ export class GraphService {
       }
 
       return allMatches;
-    } catch (e: any) {
-      if (e.name === "AbortError") {
+    } catch (e: unknown) {
+      if (e instanceof Error && e.name === "AbortError") {
         process.stderr.write(`⚠️ [GRAPH] Fact Search timed out (5s)\n`);
         return [];
       }
-      process.stderr.write(`❌ [GRAPH] Fact Search error: ${e.message}\n`);
+      process.stderr.write(
+        `❌ [GRAPH] Fact Search error: ${e instanceof Error ? e.message : String(e)}\n`,
+      );
       return [];
     }
   }
@@ -432,7 +500,7 @@ export class GraphService {
     sessionId: string | string[],
     seeds: string[],
     _depth: number = 1,
-  ): Promise<any[]> {
+  ): Promise<MemoryResult[]> {
     if (seeds.length === 0) {
       return [];
     }
@@ -454,8 +522,10 @@ export class GraphService {
     try {
       await this.callMcpTool("clear_graph", { group_ids: [sessionId] });
       this.log(`🧹 [GRAPH] Graph for ${sessionId} cleared via MCP.`);
-    } catch (e: any) {
-      process.stderr.write(`❌ [GRAPH] Clear error: ${e.message}\n`);
+    } catch (e: unknown) {
+      process.stderr.write(
+        `❌ [GRAPH] Clear error: ${e instanceof Error ? e.message : String(e)}\n`,
+      );
     }
   }
 
@@ -463,7 +533,11 @@ export class GraphService {
    * Retrieves raw episodes created after a specific date.
    * Useful for finding "pending" messages that haven't been narrativized yet.
    */
-  async getEpisodesSince(sessionId: string, since: Date, limit: number = 100): Promise<any[]> {
+  async getEpisodesSince(
+    sessionId: string,
+    since: Date,
+    limit: number = 100,
+  ): Promise<GraphEpisode[]> {
     try {
       // We fetch all episodes (Graphiti doesn't support date filtering yet) and filter client-side.
       // Optimization: In a real prod scenario, we'd want pagination or a limit.
@@ -476,21 +550,25 @@ export class GraphService {
         10000, // 10s heavy read
       );
 
-      const rawContent = data?.result?.content?.[0]?.text;
+      if (!data) {
+        return [];
+      }
+
+      const rawContent = data.result?.content?.[0]?.text || data.content?.[0]?.text;
 
       if (!rawContent) {
         this.log(`  📊 [DEBUG] No rawContent in getEpisodesSince. Data: ${JSON.stringify(data)}`);
         return [];
       }
 
-      const episodes = JSON.parse(rawContent).episodes || [];
+      const episodes = (JSON.parse(rawContent) as { episodes?: GraphEpisode[] }).episodes || [];
       const threshold = since.getTime();
 
       this.log(
         `  📊 [DEBUG] Found ${episodes.length} total episodes in Graphiti for ${sessionId}.`,
       );
 
-      const filtered = episodes.filter((ep: any) => {
+      const filtered = episodes.filter((ep: { created_at: string; body?: string }) => {
         // Exclude the story itself and ensure it's newer
 
         const epTime = new Date(ep.created_at).getTime();
@@ -501,12 +579,14 @@ export class GraphService {
         `  📊 [DEBUG] ${filtered.length} episodes passed threshold (> ${since.toISOString()}).`,
       );
       return filtered;
-    } catch (e: any) {
-      if (e.name === "AbortError") {
+    } catch (e: unknown) {
+      if (e instanceof Error && e.name === "AbortError") {
         process.stderr.write(`⚠️ [GRAPH] Get Episodes timed out (10s)\n`);
         return [];
       }
-      process.stderr.write(`❌ [GRAPH] Get Pending Episodes error: ${e.message}\n`);
+      process.stderr.write(
+        `❌ [GRAPH] Get Pending Episodes error: ${e instanceof Error ? e.message : String(e)}\n`,
+      );
       return [];
     }
   }

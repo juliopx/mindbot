@@ -1,13 +1,23 @@
 import { GraphService } from "../../src/services/memory/GraphService.js";
 
+function isHeartbeatMessage(text: string): boolean {
+  const isPrompt = text.includes("Read HEARTBEAT.md") && text.includes("HEARTBEAT_OK");
+  const isResponse = text.trim() === "HEARTBEAT_OK";
+  return isPrompt || isResponse;
+}
+
 async function main() {
   const sessionId = process.argv[2];
   const query = process.argv[3];
 
   if (!sessionId) {
     console.log("\n📖 Usage: node --import tsx scripts/memory/ask-memory.ts <sessionId> [query]\n");
-    console.log("Example 1 (Stats): node --import tsx scripts/memory/ask-memory.ts global-user-memory");
-    console.log("Example 2 (Query): node --import tsx scripts/memory/ask-memory.ts global-user-memory \"Who is Julio?\"\n");
+    console.log(
+      "Example 1 (Stats): node --import tsx scripts/memory/ask-memory.ts global-user-memory",
+    );
+    console.log(
+      'Example 2 (Query): node --import tsx scripts/memory/ask-memory.ts global-user-memory "Who is Julio?"\n',
+    );
     process.exit(1);
   }
 
@@ -29,10 +39,13 @@ async function main() {
       if (episodes.length > 0) {
         const last = episodes[episodes.length - 1];
         console.log(`\n📅 Latest Record: ${last.created_at || "Unknown"}`);
+        episodes.filter((ep: any) => {
+          const body = ep.body || ep.content || ep.episode_body || "";
+          return !isHeartbeatMessage(body);
+        });
         const content = last.body || last.content || last.episode_body || "";
         console.log(`   "${content.substring(0, 100).replace(/\n/g, " ")}..."`);
       }
-
     } catch (e: any) {
       console.error(`❌ Failed to fetch stats: ${e.message}`);
     }
@@ -61,7 +74,7 @@ async function main() {
     const facts = await graph.searchFacts(sessionId, query);
     if (facts.length > 0) {
       facts.forEach((f, i) => {
-        const content = typeof f === 'string' ? f : (f.content || JSON.stringify(f));
+        const content = typeof f === "string" ? f : f.content || JSON.stringify(f);
         console.log(`   [${i + 1}] ${content}`);
       });
     } else {
@@ -69,10 +82,9 @@ async function main() {
     }
 
     console.log("\n✅ Query complete.\n");
-
   } catch (e: any) {
     console.error(`\n❌ Query failed: ${e.message}`);
   }
 }
 
-main();
+void main();

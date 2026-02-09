@@ -13,7 +13,6 @@ import type {
 import type { RuntimeEnv } from "../runtime.js";
 import type { TelegramContext } from "./bot/types.js";
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
-import { resolveEffectiveMessagesConfig } from "../agents/identity.js";
 import { resolveChunkMode } from "../auto-reply/chunk.js";
 import {
   buildCommandTextFromArgs,
@@ -44,7 +43,7 @@ import {
 } from "../plugins/commands.js";
 import { resolveAgentRoute } from "../routing/resolve-route.js";
 import { resolveThreadSessionKeys } from "../routing/session-key.js";
-import { GraphService } from "../services/memory/GraphService.js";
+import { GraphService, type MemoryResult } from "../services/memory/GraphService.js";
 import { resolveUserPath } from "../utils.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import { firstDefined, isSenderAllowed, normalizeAllowFromWithStore } from "./bot-access.js";
@@ -759,7 +758,17 @@ export const registerTelegramNativeCommands = ({
 
         try {
           // Resolve STORY.md path favoring configured workspace
-          const mindConfig = cfg.plugins?.entries?.["mind-memory"] as any;
+          const mindConfig = cfg.plugins?.entries?.["mind-memory"] as
+            | {
+                config?: {
+                  memoryDir?: string;
+                  graphiti?: {
+                    server_url?: string;
+                    api_key?: string;
+                  };
+                };
+              }
+            | undefined;
           const memoryDirOverride = mindConfig?.config?.memoryDir;
           const defaultAgentId = resolveDefaultAgentId(cfg);
 
@@ -796,9 +805,12 @@ export const registerTelegramNativeCommands = ({
             chunkMode,
             linkPreview: false,
           });
-        } catch (err: any) {
-          runtime.error?.(danger(`telegram /story failed: ${err.message}`));
-          await bot.api.sendMessage(chatId, `Error al leer STORY.md: ${err.message}`, {
+        } catch (err: unknown) {
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          await bot.api.sendMessage(chatId, `❌ Error: ${errorMessage}`, {
+            message_thread_id: threadIdForSend ?? undefined,
+          });
+          await bot.api.sendMessage(chatId, `Error al leer STORY.md: ${errorMessage}`, {
             message_thread_id: threadIdForSend ?? undefined,
           });
         }
@@ -847,8 +859,21 @@ export const registerTelegramNativeCommands = ({
         }
 
         try {
-          const mindConfig = cfg.plugins?.entries?.["mind-memory"] as any;
-          const graphitiUrl = mindConfig?.config?.graphiti?.baseUrl || "http://localhost:8001";
+          const mindConfig = cfg.plugins?.entries?.["mind-memory"] as
+            | {
+                config?: {
+                  debug?: boolean;
+                  graphiti?: {
+                    server_url?: string;
+                    baseUrl?: string;
+                  };
+                };
+              }
+            | undefined;
+          const graphitiUrl =
+            mindConfig?.config?.graphiti?.baseUrl ||
+            mindConfig?.config?.graphiti?.server_url ||
+            "http://localhost:8001";
           const debug = !!mindConfig?.config?.debug;
           const graph = new GraphService(graphitiUrl, debug);
           const sessionId = "global-user-memory";
@@ -861,15 +886,15 @@ export const registerTelegramNativeCommands = ({
           const results: string[] = [];
           if (nodes.length > 0) {
             results.push("🔍 *NODES*");
-            nodes.forEach((n: any, i: number) => {
+            nodes.forEach((n: MemoryResult, i: number) => {
               results.push(`${i + 1}. ${n.content}`);
             });
           }
           if (facts.length > 0) {
             results.push("\n🔍 *FACTS*");
-            facts.forEach((f: any, i: number) => {
-              const content = typeof f === "string" ? f : f.content || JSON.stringify(f);
-              results.push(`${i + 1}. ${content}`);
+            nodes.forEach((n: MemoryResult, i: number) => {
+              const date = new Date(n.timestamp).toLocaleDateString();
+              results.push(`${i + 1}. [${date}] ${n.content}`);
             });
           }
 
@@ -894,9 +919,10 @@ export const registerTelegramNativeCommands = ({
             chunkMode,
             linkPreview: false,
           });
-        } catch (err: any) {
-          runtime.error?.(danger(`telegram /remember failed: ${err.message}`));
-          await bot.api.sendMessage(chatId, `Error al consultar la memoria: ${err.message}`, {
+        } catch (err: unknown) {
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          runtime.error?.(danger(`telegram /remember failed: ${errorMessage}`));
+          await bot.api.sendMessage(chatId, `Error al consultar la memoria: ${errorMessage}`, {
             message_thread_id: threadIdForSend ?? undefined,
           });
         }

@@ -1,8 +1,14 @@
 import { getRelativeTimeDescription } from "../../utils/time-format.js";
-import { GraphService } from "./GraphService.js";
+import { GraphService, type MemoryResult } from "./GraphService.js";
 
 export interface LLMClient {
   complete(prompt: string): Promise<{ text: string | null }>;
+}
+
+export interface RecentMessage {
+  role: string;
+  text?: string;
+  content?: string | Array<{ type: string; text?: string }>;
 }
 
 export class SubconsciousService {
@@ -48,7 +54,7 @@ export class SubconsciousService {
    */
   async generateSeekerQueries(
     currentPrompt: string,
-    recentMessages: any[],
+    recentMessages: RecentMessage[],
     agent?: LLMClient,
   ): Promise<string[]> {
     if (!agent) {
@@ -67,7 +73,15 @@ export class SubconsciousService {
     const analysisWindow = recentMessages.slice(-5);
     const historyText =
       analysisWindow.length > 0
-        ? analysisWindow.map((m) => `${m.role}: ${m.text || m.content || ""}`).join("\n")
+        ? analysisWindow
+            .map((m) => {
+              let mText = m.text || m.content || "";
+              if (Array.isArray(mText)) {
+                mText = mText.map((p) => (typeof p === "string" ? p : p.text || "")).join(" ");
+              }
+              return `${m.role}: ${String(mText)}`;
+            })
+            .join("\n")
         : "(No previous context)";
 
     const prompt = `You are the "Subconscious Observer". 
@@ -92,7 +106,7 @@ BE CONCISE. DO NOT include headers or explanations.`;
       const lastMsg = analysisWindow[analysisWindow.length - 1];
       let lastText = lastMsg.text || lastMsg.content || "";
       if (Array.isArray(lastText)) {
-        lastText = lastText.map((p: any) => (typeof p === "string" ? p : p.text || "")).join(" ");
+        lastText = lastText.map((p) => (typeof p === "string" ? p : p.text || "")).join(" ");
       }
       this.log(`      - Last Context Msg: "${lastText}"`);
     }
@@ -226,7 +240,7 @@ Text: "${currentPrompt}"`;
    * The Echo Filter:
    * Prevents repeating the same memories too frequently.
    */
-  private applyEchoFilter(results: any[]): any[] {
+  private applyEchoFilter(results: MemoryResult[]): MemoryResult[] {
     const beforeCount = results.length;
     const filtered = results.filter((r) => {
       // RESONANCE BOOST: If it's the #1 hit for a specific query search (marked externally),
@@ -278,14 +292,18 @@ Text: "${currentPrompt}"`;
    * The Memory Horizon:
    * Ensures flashbacks are older than the messages currently in the context.
    */
-  private applyMemoryHorizon(results: any[], oldestContextTimestamp?: Date): any[] {
+  private applyMemoryHorizon(
+    results: MemoryResult[],
+    oldestContextTimestamp?: Date,
+  ): MemoryResult[] {
     if (!oldestContextTimestamp) {
       return results;
     }
 
     const beforeCount = results.length;
     const filtered = results.filter((r) => {
-      let timestamp = r.message?.created_at || r.message?.createdAt || r.timestamp;
+      let timestamp: string | Date | undefined =
+        r.message?.created_at || r.message?.createdAt || r.timestamp;
 
       // Extract content to check for embedded tags
       const content = r.message?.content || r.text || r.content || "";
@@ -349,19 +367,21 @@ Text: "${currentPrompt}"`;
   async getFlashback(
     sessionId: string | string[],
     currentPrompt: string,
-    agent: any,
+    agent: LLMClient | null,
     oldestContextTimestamp?: Date,
-    recentMessages: any[] = [],
+    recentMessages: RecentMessage[] = [],
   ): Promise<string> {
     this.log("🧠 [MIND] Subconscious is exploring memories...");
 
     const queries = [
-      ...new Set(await this.generateSeekerQueries(currentPrompt, recentMessages, agent)),
+      ...new Set(
+        await this.generateSeekerQueries(currentPrompt, recentMessages, agent ?? undefined),
+      ),
     ];
 
     // 1. Neural Resonance (Graph Retrieval)
-    const entities = [...new Set(await this.extractEntities(currentPrompt, agent))];
-    let allResults: any[] = [];
+    const entities = agent ? await this.extractEntities(currentPrompt, agent) : [];
+    let allResults: MemoryResult[] = [];
 
     if (entities.length > 0) {
       this.log(`  🔗[GRAPH] Seeds found: ${entities.join(", ")}.Exploring graph...`);
@@ -407,9 +427,9 @@ Text: "${currentPrompt}"`;
     }
 
     // Deduplicate by content or a unique ID if available
-    const uniqueMap = new Map<string, any>();
+    const uniqueMap = new Map<string, MemoryResult>();
     for (const r of allResults) {
-      const id = r.uuid || r.content; // Assuming 'uuid' or 'content' can serve as a unique identifier
+      const id = r.content; // Assuming 'content' can serve as a unique identifier
       if (!uniqueMap.has(id)) {
         uniqueMap.set(id, r);
       }
@@ -483,7 +503,7 @@ Text: "${currentPrompt}"`;
 
       seenContent.add(normalizedForComparison);
 
-      let finalDate = r.message?.created_at ? new Date(r.message?.created_at) : new Date();
+      let finalDate: Date = r.message?.created_at ? new Date(r.message?.created_at) : new Date();
       if (r.message?.createdAt) {
         finalDate = new Date(r.message.createdAt);
       }

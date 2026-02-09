@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import fs from "node:fs";
-import path from "node:path";
 import os from "node:os";
+import path from "node:path";
 
 // Global MCP Session Cache (shared across all GraphService instances)
 const MCP_SESSION_CACHE_FILE = path.join(os.tmpdir(), "mindbot-graphiti-mcp-session.txt");
@@ -38,7 +38,7 @@ export class GraphService {
           this.log(`🔑 [GRAPH] Reusing cached MCP Session: ${this.mcpSessionId}`);
         }
       }
-    } catch (e) {
+    } catch {
       // Ignore cache read errors
     }
   }
@@ -61,12 +61,16 @@ export class GraphService {
   }
 
   private static async processQueue() {
-    if (GraphService.isProcessing) return;
+    if (GraphService.isProcessing) {
+      return;
+    }
     GraphService.isProcessing = true;
 
     while (GraphService.taskQueue.length > 0) {
       const task = GraphService.taskQueue.shift();
-      if (!task) break;
+      if (!task) {
+        break;
+      }
 
       try {
         await task.execute();
@@ -83,14 +87,18 @@ export class GraphService {
    * If the session is invalid (400/403), clears cache and retries.
    */
   private async ensureSession(forceRefresh = false): Promise<string> {
-    if (this.mcpSessionId && !forceRefresh) return this.mcpSessionId;
+    if (this.mcpSessionId && !forceRefresh) {
+      return this.mcpSessionId;
+    }
 
     if (forceRefresh) {
       this.log(`🔄 [GRAPH] Forcing new MCP Session...`);
       this.mcpSessionId = null;
       try {
         fs.unlinkSync(MCP_SESSION_CACHE_FILE);
-      } catch (e) {}
+      } catch {
+        // Ignore unlink errors
+      }
     }
 
     const url = `${this.mcpBaseURL}/mcp`;
@@ -130,7 +138,7 @@ export class GraphService {
       // Persist to global cache so other GraphService instances can reuse it
       try {
         fs.writeFileSync(MCP_SESSION_CACHE_FILE, sessionId, "utf-8");
-      } catch (e) {
+      } catch {
         // Non-fatal: just log
         this.log(`⚠️ [GRAPH] Failed to cache MCP Session ID`);
       }
@@ -139,9 +147,9 @@ export class GraphService {
       return this.mcpSessionId;
     } catch (e: any) {
       if (e.name === "AbortError") {
-        throw new Error(`MCP Initialization timed out (5s)`);
+        throw new Error(`MCP Initialization timed out (5s)`, { cause: e });
       }
-      throw new Error(`MCP Initialization failed: ${e.message}`);
+      throw new Error(`MCP Initialization failed: ${e.message}`, { cause: e });
     }
   }
 
@@ -207,7 +215,9 @@ export class GraphService {
       return this.parseSSEResult(text);
     } catch (e: any) {
       // Bubble up abort errors or max retries
-      if (e.name === "AbortError") throw e;
+      if (e.name === "AbortError") {
+        throw e;
+      }
       throw e;
     }
   }
@@ -222,10 +232,14 @@ export class GraphService {
         try {
           const json = JSON.parse(line.substring(6));
           // Filter out error-like messages or empty results that shouldn't be treated as memories
-          if (json.result?.content?.[0] === "No relevant nodes found") return null;
-          if (json.content?.[0]?.text?.includes("No relevant nodes found")) return null;
+          if (json.result?.content?.[0] === "No relevant nodes found") {
+            return null;
+          }
+          if (json.content?.[0]?.text?.includes("No relevant nodes found")) {
+            return null;
+          }
           return json;
-        } catch (e) {
+        } catch {
           continue;
         }
       }
@@ -284,7 +298,9 @@ export class GraphService {
         max_nodes: 50,
       });
 
-      if (!data) return [];
+      if (!data) {
+        return [];
+      }
 
       let results = data.result?.content || data.content || [];
 
@@ -312,18 +328,15 @@ export class GraphService {
             }
           }
           allMatches.push({
-            content:
-              (c as any).summary ||
-              (c as any).name ||
-              (typeof c === "string" ? c : JSON.stringify(c)),
-            timestamp: (c as any).created_at,
+            content: c.summary || c.name || (typeof c === "string" ? c : JSON.stringify(c)),
+            timestamp: c.created_at,
             _sourceQuery: `Graph Nodes (${query.substring(0, 30)}...)`,
             _boosted: true,
           });
-        } catch (e) {
+        } catch {
           allMatches.push({
             content: typeof c === "string" ? c : JSON.stringify(c),
-            timestamp: (c as any).created_at,
+            timestamp: c.created_at,
             _sourceQuery: `Graph Nodes (${query.substring(0, 30)}...)`,
             _boosted: true,
           });
@@ -354,7 +367,9 @@ export class GraphService {
         group_ids: groupIds,
       });
 
-      if (!data) return [];
+      if (!data) {
+        return [];
+      }
 
       let results = data.result?.content || data.content || [];
 
@@ -384,15 +399,15 @@ export class GraphService {
             }
           }
           allMatches.push({
-            content: (c as any).fact || (typeof c === "string" ? c : JSON.stringify(c)),
-            timestamp: (c as any).created_at,
+            content: c.fact || (typeof c === "string" ? c : JSON.stringify(c)),
+            timestamp: c.created_at,
             _sourceQuery: `Graph Facts (${query.substring(0, 30)}...)`,
             _boosted: true,
           });
-        } catch (e) {
+        } catch {
           allMatches.push({
             content: typeof c === "string" ? c : JSON.stringify(c),
-            timestamp: (c as any).created_at,
+            timestamp: c.created_at,
             _sourceQuery: `Graph Facts (${query.substring(0, 30)}...)`,
             _boosted: true,
           });
@@ -416,9 +431,11 @@ export class GraphService {
   async searchGraph(
     sessionId: string | string[],
     seeds: string[],
-    depth: number = 1,
+    _depth: number = 1,
   ): Promise<any[]> {
-    if (seeds.length === 0) return [];
+    if (seeds.length === 0) {
+      return [];
+    }
 
     // For now, call nodes search as the primary "resonance" mechanism
     const query = seeds.join(", ");

@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { getRelativeTimeDescription } from "../../utils/time-format.js";
 import { GraphService } from "./GraphService.js";
-import { buildStoryPrompt, type StoryPromptOptions } from "./story-prompt-builder.js";
+import { buildStoryPrompt } from "./story-prompt-builder.js";
 
 // File-based lock to prevent concurrent narrative syncs across separate Node processes
 const NARRATIVE_LOCK_FILE = "/tmp/mind_narrative_sync.lock";
@@ -49,13 +49,15 @@ export class ConsolidationService {
       try {
         await fs.access(bootstrapFlagPath);
         return;
-      } catch {}
+      } catch {
+        // Continue to bootstrap
+      }
 
       this.log(`📥 [MIND] No bootstrap flag found. Ingesting memory history into Graphiti...`);
 
       // 1. Ingest Historical MD Files
       const files = await fs.readdir(memoryDir);
-      const mdFiles = files.filter((f) => f.endsWith(".md")).sort();
+      const mdFiles = files.filter((f) => f.endsWith(".md")).toSorted();
 
       for (const file of mdFiles) {
         const filePath = path.join(memoryDir, file);
@@ -95,15 +97,21 @@ export class ConsolidationService {
           if (Array.isArray(text)) {
             text = text.map((p: any) => (typeof p === "string" ? p : p.text || "")).join(" ");
           }
-          if (!text) continue;
+          if (!text) {
+            continue;
+          }
 
           const ts = m.timestamp || m.created_at;
           const date = ts ? new Date(ts) : new Date();
-          if (date < earliestDate) earliestDate = date;
+          if (date < earliestDate) {
+            earliestDate = date;
+          }
 
           const timeStr = date.toISOString().split("T")[1].substring(0, 5);
 
-          if (this.isHeartbeatMessage(text)) continue;
+          if (this.isHeartbeatMessage(text)) {
+            continue;
+          }
 
           transcriptLines.push(`[${timeStr}] ${role}: ${text}`);
         }
@@ -138,7 +146,9 @@ export class ConsolidationService {
     identityContext?: string,
     anchorTimestamp?: number,
   ): Promise<string> {
-    if (typeof oldMessages !== "string" && oldMessages.length === 0) return currentStory;
+    if (typeof oldMessages !== "string" && oldMessages.length === 0) {
+      return currentStory;
+    }
 
     this.log(`📖 [MIND] Updating Narrative Story for ${sessionId}...`);
 
@@ -154,7 +164,9 @@ export class ConsolidationService {
                 .map((c: any) => (typeof c === "string" ? c : (c.text ?? c.content ?? "")))
                 .join(" ");
             }
-            if (this.isHeartbeatMessage(text)) return null;
+            if (this.isHeartbeatMessage(text)) {
+              return null;
+            }
 
             return `[${date.toISOString()}] ${m.role || "unknown"}: ${text}`;
           })
@@ -231,7 +243,9 @@ ${newStory}
         if (Array.isArray(oldMessages)) {
           for (const m of oldMessages) {
             const t = new Date(m.timestamp ?? m.created_at ?? 0).getTime();
-            if (t > maxTimestamp) maxTimestamp = t;
+            if (t > maxTimestamp) {
+              maxTimestamp = t;
+            }
           }
         }
 
@@ -276,7 +290,9 @@ ${newStory}
    * Updates the pending consolidation status by adding a new episode.
    */
   async trackPendingEpisode(memoryDir: string, text: string): Promise<void> {
-    if (this.isHeartbeatMessage(text)) return;
+    if (this.isHeartbeatMessage(text)) {
+      return;
+    }
     const statusPath = path.join(memoryDir, ".pending-consolidation-status");
     const logPath = path.join(memoryDir, "pending-episodes.log");
     const status = await this.getPendingStatus(memoryDir);
@@ -354,7 +370,7 @@ ${newStory}
             lastUpdate = stats.mtime;
           }
         }
-      } catch (e) {
+      } catch {
         // File doesn't exist, treat as new
         isNewStory = true;
       }
@@ -389,7 +405,7 @@ ${newStory}
         // Get the config from the agent (if passed via some bridge) or assume disabled by default
         // In the modular architecture, we might need to pass this explicitly.
         // For the moment, let's check a new parameter 'autoBootstrap'
-        const autoBootstrap = (agent as any).autoBootstrapHistory === true;
+        const autoBootstrap = agent.autoBootstrapHistory === true;
 
         if (autoBootstrap) {
           currentStory = await this.bootstrapFromLegacyMemory(
@@ -487,19 +503,22 @@ ${newStory}
 
     try {
       const files = await fs.readdir(memoryDir);
-      const mdFiles = files.filter((f) => f.endsWith(".md")).sort();
+      const mdFiles = [...files].filter((f) => f.endsWith(".md")).toSorted();
 
-      if (mdFiles.length === 0) return currentStory;
+      if (mdFiles.length === 0) {
+        return currentStory;
+      }
 
       this.log(`🧊 [MIND] Cold Start: Bootstrapping from ${mdFiles.length} legacy memory files...`);
 
       let currentBatch = "";
-      let batchStartFile = "";
 
       // Dynamic SAFE LIMIT (default to 50k tokens if not provided)
-      this.log(
-        `🧊 [MIND] Bootstrap Strategy: Dynamic Chunking (Limit: ~${safeTokenLimit.toLocaleString()} tokens)`,
-      );
+      if (this.debug) {
+        this.log(
+          `🧊 [MIND] Bootstrap Strategy: Dynamic Chunking (Limit: ~${safeTokenLimit.toLocaleString()} tokens)`,
+        );
+      }
 
       // NOTE: Historical episode ingestion now happens EARLIER in run.ts before user message storage.
       // This method only handles narrative story generation from historical files.
@@ -537,11 +556,9 @@ ${newStory}
 
           // 2. Reset batch with this leftover fragment
           currentBatch = fragment;
-          batchStartFile = file;
           this.log(`🔄 [MIND] Starting new chunk with ${file}...`);
         } else {
           // Safe to add
-          if (currentBatch.length === 0) batchStartFile = file;
           currentBatch += fragment;
         }
 
@@ -650,35 +667,46 @@ ${newStory}
       }
 
       // Sort by mtime descending (newest first) and take top 5
-      const recentFiles = (
-        await Promise.all(jsonlFiles.map(async (f) => ({ path: f, stat: await fs.stat(f) })))
-      )
-        .sort((a, b) => b.stat.mtime.getTime() - a.stat.mtime.getTime())
+      const recentFiles = [...jsonlFiles].map(async (f) => ({ path: f, stat: await fs.stat(f) }));
+      const settledFiles = await Promise.all(recentFiles);
+      const sortedFiles = settledFiles
+        .toSorted((a, b) => b.stat.mtime.getTime() - a.stat.mtime.getTime())
         .slice(0, 5);
 
-      this.log(`   Scanning top ${recentFiles.length} files in ${sessionsDir}`);
-      for (const f of recentFiles)
+      this.log(`   Scanning top ${sortedFiles.length} files in ${sessionsDir}`);
+      for (const f of sortedFiles) {
         this.log(`     - ${path.basename(f.path)} (${f.stat.mtime.toISOString()})`);
+      }
 
-      if (recentFiles.length === 0) return;
+      if (sortedFiles.length === 0) {
+        return;
+      }
 
       // 3. Collect ONE combined transcript of NEW messages
       const allNewMessages: any[] = [];
 
-      for (const file of recentFiles) {
+      for (const file of sortedFiles) {
         try {
           const content = await fs.readFile(file.path, "utf-8");
           const lines = content.split("\n");
           for (const line of lines) {
             const trimmed = line.trim();
-            if (!trimmed) continue;
+            if (!trimmed) {
+              continue;
+            }
             try {
               const entry = JSON.parse(trimmed);
-              if (entry.type !== "message") continue;
+              if (entry.type !== "message") {
+                continue;
+              }
 
               let entryTs = entry.timestamp;
-              if (typeof entryTs === "string") entryTs = new Date(entryTs).getTime();
-              if (typeof entryTs !== "number" || isNaN(entryTs)) continue;
+              if (typeof entryTs === "string") {
+                entryTs = new Date(entryTs).getTime();
+              }
+              if (typeof entryTs !== "number" || isNaN(entryTs)) {
+                continue;
+              }
 
               if (entryTs > lastProcessed) {
                 let text = entry.message?.text || "";
@@ -699,8 +727,8 @@ ${newStory}
               }
             } catch {}
           }
-        } catch (e) {
-          this.log(`⚠️ [MIND] Failed to read session ${file.path}: ${e}`);
+        } catch (e: any) {
+          this.log(`⚠️ [MIND] Failed to read session ${file.path}: ${e.message}`);
         }
       }
 
@@ -803,8 +831,12 @@ ${newStory}
       // 2. Filter New Messages
       const newMessages = messages.filter((m) => {
         let ts = m.timestamp ?? m.created_at ?? 0;
-        if (typeof ts === "string") ts = new Date(ts).getTime();
-        if (ts <= lastProcessed) return false;
+        if (typeof ts === "string") {
+          ts = new Date(ts).getTime();
+        }
+        if (ts <= lastProcessed) {
+          return false;
+        }
         let text = m.text || "";
         if (!text && Array.isArray(m.content)) {
           text = m.content.find((c: any) => c.type === "text")?.text || "";
@@ -815,7 +847,9 @@ ${newStory}
         return text && !this.isHeartbeatMessage(text);
       });
 
-      if (newMessages.length === 0) return;
+      if (newMessages.length === 0) {
+        return;
+      }
 
       this.log(
         `📖 [MIND] Compaction Trigger: Syncing ${newMessages.length} new messages to story...`,
@@ -872,7 +906,9 @@ ${newStory}
    * Calculates CURRENT relative time based on embedded or metadata timestamps.
    */
   processFlashbacks(results: any[]): string {
-    if (!results || results.length === 0) return "";
+    if (!results || results.length === 0) {
+      return "";
+    }
 
     const context = results
       .map((m: any) => {

@@ -3,8 +3,8 @@ import { fileURLToPath } from "node:url";
 import type { OpenClawConfig } from "../config/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import type { WizardPrompter } from "../wizard/prompts.js";
-import { ensureGraphitiDocker, installDocker } from "../plugins/mind-memory/docker.js";
 import { getDockerStatus } from "../infra/docker.js";
+import { ensureGraphitiDocker, installDocker } from "../plugins/mind-memory/docker.js";
 
 export async function setupMindMemory(
   cfg: OpenClawConfig,
@@ -25,7 +25,9 @@ export async function setupMindMemory(
     initialValue: true,
   });
 
-  if (!enabled) return cfg;
+  if (!enabled) {
+    return cfg;
+  }
 
   let spin = prompter.progress("Checking Docker installation...");
   let dockerOk = false;
@@ -93,7 +95,7 @@ export async function setupMindMemory(
   } catch (e: any) {
     try {
       spin.stop(`Mind Memory setup failed: ${e.message}`);
-    } catch { }
+    } catch {}
     return cfg;
   }
 

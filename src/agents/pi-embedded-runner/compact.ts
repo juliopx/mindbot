@@ -435,22 +435,26 @@ export async function compactEmbeddedPiSessionDirect(
           session.agent.replaceMessages(limited);
         }
 
+        // Initialize Mind Services
+        const mindConfig = params.config?.plugins?.entries?.["mind-memory"] as any;
+        const debug = !!mindConfig?.config?.debug;
+
         // Subconscious agent for narrative LLM calls (shared with run.ts)
         const { createSubconsciousAgent } = await import("./subconscious-agent.js");
         const subconsciousAgent = createSubconsciousAgent({
           model,
           authStorage,
           modelRegistry,
-          debug: !!params.config?.plugins?.entries?.["mind-memory"]?.config?.debug,
+          debug,
+          autoBootstrapHistory: mindConfig?.config?.narrative?.autoBootstrapHistory ?? false,
         });
 
-        // Initialize Mind Services
-        const mindConfig = params.config?.plugins?.entries?.["mind-memory"] as any;
-        const debug = !!mindConfig?.config?.debug;
         const isMindEnabled =
           mindConfig?.enabled && (mindConfig?.config?.narrative?.enabled ?? true);
 
-        if (debug) process.stderr.write(`📖 [MIND] isMindEnabled=${isMindEnabled}\n`);
+        if (debug) {
+          process.stderr.write(`📖 [MIND] isMindEnabled=${isMindEnabled}\n`);
+        }
 
         if (isMindEnabled) {
           try {
@@ -458,7 +462,7 @@ export async function compactEmbeddedPiSessionDirect(
             const { ConsolidationService } =
               await import("../../services/memory/ConsolidationService.js");
 
-            const gUrl = (mindConfig?.config as any)?.graphiti?.baseUrl || "http://localhost:8001";
+            const gUrl = mindConfig?.config?.graphiti?.baseUrl || "http://localhost:8001";
             const gs = new GraphService(gUrl, debug);
             const cons = new ConsolidationService(gs, debug);
 
@@ -467,7 +471,7 @@ export async function compactEmbeddedPiSessionDirect(
             // Resolve context window info for safe limit
             const { resolveContextWindowInfo } = await import("../context-window-guard.js");
             const ctxInfo = resolveContextWindowInfo({
-              cfg: params.config as any,
+              cfg: params.config,
               provider,
               modelId,
               modelContextWindow: model.contextWindow,
@@ -477,10 +481,11 @@ export async function compactEmbeddedPiSessionDirect(
 
             // SYNC SESSION TO STORY BEFORE COMPACTION
             // This ensures we capture the detailed messages before they are summarized/pruned
-            if (debug)
+            if (debug) {
               process.stderr.write(
                 `📖 [MIND] Syncing ${session.messages.length} messages to ${storyPath} (limit: ${safeTokenLimit})\n`,
               );
+            }
             await cons.syncStoryWithSession(
               session.messages,
               storyPath,
@@ -488,7 +493,9 @@ export async function compactEmbeddedPiSessionDirect(
               undefined,
               safeTokenLimit,
             );
-            if (debug) process.stderr.write(`📖 [MIND] Story sync completed\n`);
+            if (debug) {
+              process.stderr.write(`📖 [MIND] Story sync completed\n`);
+            }
           } catch (e: any) {
             process.stderr.write(
               `❌ [MIND] Mind consolidation failed during compaction: ${e?.message || e}\n`,

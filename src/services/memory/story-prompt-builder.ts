@@ -13,7 +13,7 @@ export interface StoryPromptOptions {
 export async function readIdentityContext(identityPath: string): Promise<string> {
   try {
     return await fs.readFile(identityPath, "utf-8");
-  } catch (e) {
+  } catch {
     return "";
   }
 }

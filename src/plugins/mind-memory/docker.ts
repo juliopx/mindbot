@@ -1,8 +1,8 @@
 import { exec } from "node:child_process";
-import { promisify } from "node:util";
-import path from "node:path";
 import fs from "node:fs/promises";
-import { ensureDockerDaemon, installDockerNative, getDockerStatus } from "../../infra/docker.js";
+import path from "node:path";
+import { promisify } from "node:util";
+import { ensureDockerDaemon, getDockerStatus } from "../../infra/docker.js";
 
 const execAsync = promisify(exec);
 
@@ -31,7 +31,9 @@ export async function ensureGraphitiDocker(pluginDir: string): Promise<boolean> 
     const ok = await ensureDockerDaemon({
       onLog: (msg) => process.stderr.write(msg + "\n"),
     });
-    if (!ok) return false;
+    if (!ok) {
+      return false;
+    }
 
     // 2. Check if container is already running
     const { stdout } = await execAsync('docker ps --filter "name=graphiti" --format "{{.Names}}"');
@@ -57,7 +59,9 @@ export async function ensureGraphitiDocker(pluginDir: string): Promise<boolean> 
         composePath = p;
         process.stderr.write(`🐳 [DOCKER] Found compose file at: ${p}\n`);
         break;
-      } catch (e) {}
+      } catch {
+        // Ignore
+      }
     }
 
     if (!composePath) {

@@ -1,12 +1,11 @@
-import { GraphService } from "../../services/memory/GraphService.js";
-import { SubconsciousService } from "../../services/memory/SubconsciousService.js";
-import { ConsolidationService } from "../../services/memory/ConsolidationService.js";
-import { ensureGraphitiDocker, installDocker } from "./docker.js";
+import { complete } from "@mariozechner/pi-ai";
 import path from "node:path";
-import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { resolveModel } from "../../agents/pi-embedded-runner/model.js";
-import { complete } from "@mariozechner/pi-ai";
+import { ConsolidationService } from "../../services/memory/ConsolidationService.js";
+import { GraphService } from "../../services/memory/GraphService.js";
+import { SubconsciousService } from "../../services/memory/SubconsciousService.js";
+import { ensureGraphitiDocker, installDocker } from "./docker.js";
 
 export default function register(api: any) {
   const config = api.config?.plugins?.entries?.["mind-memory"]?.config || {};

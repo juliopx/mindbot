@@ -470,7 +470,7 @@ export async function agentCommand(
                     }) + "\n";
                   fs.writeSync(1, json);
                 }
-              } catch (e) {
+              } catch {
                 // Ignore serialization errors to strictly avoid breaking the run
               }
 
@@ -494,7 +494,7 @@ export async function agentCommand(
                     timestamp: Date.now(),
                   }) + "\n";
                 fs.writeSync(1, json);
-              } catch (e) {}
+              } catch {}
             },
           });
         },

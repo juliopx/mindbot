@@ -117,19 +117,25 @@ BE CONCISE. DO NOT include headers or explanations.`;
       const seenWords = new Set<string>();
 
       for (const line of lines) {
-        if (queries.length >= 3) break;
+        if (queries.length >= 3) {
+          break;
+        }
 
         let clean = line
           .replace(/^[-*•\d.]+\s*/, "")
           .replace(/["']/g, "")
           .trim();
-        if (clean.length < 3) continue;
+        if (clean.length < 3) {
+          continue;
+        }
 
         // Dedup individual words across ALL queries to kill loops
         const tokens = clean.split(/\s+/);
         const uniqueTokens = tokens.filter((t) => {
           const lct = t.toLowerCase();
-          if (seenWords.has(lct)) return false;
+          if (seenWords.has(lct)) {
+            return false;
+          }
           seenWords.add(lct);
           return true;
         });
@@ -153,7 +159,7 @@ BE CONCISE. DO NOT include headers or explanations.`;
 
       this.log(`  🔍 [SEEKER] Parsed queries: ${finalQueries.map((q) => `"${q}"`).join(", ")}`);
       return finalQueries;
-    } catch (e) {
+    } catch {
       process.stderr.write(`  ⚠️ [SEEKER] Error generating queries, fallback to prompt start.\n`);
       return [currentPrompt.substring(0, 20)];
     }
@@ -182,7 +188,9 @@ Text: "${currentPrompt}"`;
       this.log(`      - Source Text: "${currentPrompt}"`);
     }
 
-    if (text.includes("NONE") || text.length < 2) return [];
+    if (text.includes("NONE") || text.length < 2) {
+      return [];
+    }
 
     const rawItems = text
       .split(",")
@@ -192,12 +200,16 @@ Text: "${currentPrompt}"`;
     const seenWords = new Set<string>();
 
     for (const item of rawItems) {
-      if (entities.length >= 3) break;
+      if (entities.length >= 3) {
+        break;
+      }
 
       const words = item.split(/\s+/);
       const uniqueWords = words.filter((w) => {
         const lw = w.toLowerCase();
-        if (seenWords.has(lw) || lw.length > 25) return false;
+        if (seenWords.has(lw) || lw.length > 25) {
+          return false;
+        }
         seenWords.add(lw);
         return true;
       });
@@ -222,22 +234,26 @@ Text: "${currentPrompt}"`;
       // but only if it's NOT a very strong match or some other criteria.
       // Actually, let's just make the window smaller as done before,
       // and allow "Boosted" items if we add that flag.
-      if (r._boosted) return true;
+      if (r._boosted) {
+        return true;
+      }
 
       const id = r.message?.uuid || r.uuid || JSON.stringify(r.text || r.content);
-      if (this.recentlyRecalled.has(id)) return false;
+      if (this.recentlyRecalled.has(id)) {
+        return false;
+      }
       return true;
     });
 
     const filteredCount = beforeCount - filtered.length;
     if (filteredCount > 0) {
-      this.log(`  ♻️ [ECHO FILTER] Blocked ${filteredCount} redundant memories.`);
+      this.log(`  ♻️[ECHO FILTER] Blocked ${filteredCount} redundant memories.`);
     }
 
     // Extended Debug for lost facts
     filtered.forEach((r) => {
       if (r._sourceQuery && r._sourceQuery.includes("Fact")) {
-        this.log(`  ✅ [ECHO PASS] Fact retained: "${r.content}"`);
+        this.log(`  ✅[ECHO PASS] Fact retained: "${r.content}"`);
       }
     });
 
@@ -263,7 +279,9 @@ Text: "${currentPrompt}"`;
    * Ensures flashbacks are older than the messages currently in the context.
    */
   private applyMemoryHorizon(results: any[], oldestContextTimestamp?: Date): any[] {
-    if (!oldestContextTimestamp) return results;
+    if (!oldestContextTimestamp) {
+      return results;
+    }
 
     const beforeCount = results.length;
     const filtered = results.filter((r) => {
@@ -290,7 +308,7 @@ Text: "${currentPrompt}"`;
       const thresholdStr = oldestContextTimestamp.toISOString();
       if (!timestamp) {
         this.log(
-          `  ✅ [HORIZON] Allowed: No timestamp | Threshold(${thresholdStr}) | "${content.replace(/\n/g, " ")}"`,
+          `  ✅[HORIZON] Allowed: No timestamp | Threshold(${thresholdStr}) | "${content.replace(/\n/g, " ")}"`,
         );
         return true;
       }
@@ -299,7 +317,7 @@ Text: "${currentPrompt}"`;
 
       if (isNaN(memoryDate.getTime())) {
         this.log(
-          `  ⚠️ [HORIZON] Skipped invalid date: "${timestamp}" | "${content.replace(/\n/g, " ")}"`,
+          `  ⚠️[HORIZON] Skipped invalid date: "${timestamp}" | "${content.replace(/\n/g, " ")}"`,
         );
         return true; // Default to allow if date is broken
       }
@@ -313,7 +331,7 @@ Text: "${currentPrompt}"`;
       const typeLabel = isFact ? "[FACT]" : "[NODE]";
 
       this.log(
-        `  ${status} [HORIZON] ${action}: ${typeLabel} Mem(${memDateStr} via ${source}) < Threshold(${thresholdStr}) | "${content.replace(/\n/g, " ")}"`,
+        `  ${status}[HORIZON] ${action}: ${typeLabel} Mem(${memDateStr} via ${source}) < Threshold(${thresholdStr}) | "${content.replace(/\n/g, " ")}"`,
       );
 
       return isAllowed;
@@ -322,7 +340,7 @@ Text: "${currentPrompt}"`;
     const filteredCount = beforeCount - filtered.length;
     if (filteredCount > 0) {
       this.log(
-        `  🌅 [HORIZON] Total blocked: ${filteredCount} memories newer than conversation context.`,
+        `  🌅[HORIZON] Total blocked: ${filteredCount} memories newer than conversation context.`,
       );
     }
     return filtered;
@@ -346,19 +364,19 @@ Text: "${currentPrompt}"`;
     let allResults: any[] = [];
 
     if (entities.length > 0) {
-      this.log(`  🔗 [GRAPH] Seeds found: ${entities.join(", ")}. Exploring graph...`);
+      this.log(`  🔗[GRAPH] Seeds found: ${entities.join(", ")}.Exploring graph...`);
       const graphMemories = await this.graph.searchGraph(sessionId, entities, 2);
       if (graphMemories.length > 0) {
-        this.log(`    ✅ [GRAPH] Found ${graphMemories.length} memories via graph traversal.`);
+        this.log(`    ✅[GRAPH] Found ${graphMemories.length} memories via graph traversal.`);
         allResults = [...graphMemories];
       } else {
-        this.log(`    ❌ [GRAPH] No memories found via graph traversal.`);
+        this.log(`    ❌[GRAPH] No memories found via graph traversal.`);
       }
     }
 
     // 2. Supplemental Semantic Search for Seeker Queries
     for (const query of queries) {
-      this.log(`  🔎 [GRAPH] Deep searching for: "${query}"...`);
+      this.log(`  🔎[GRAPH] Deep searching for: "${query}"...`);
 
       // Parallel search for nodes and facts
       const [nodes, facts] = await Promise.all([
@@ -367,11 +385,11 @@ Text: "${currentPrompt}"`;
       ]);
 
       if (nodes.length > 0) {
-        this.log(`    ✅ [GRAPH] Found ${nodes.length} nodes for query: "${query}"`);
+        this.log(`    ✅[GRAPH] Found ${nodes.length} nodes for query: "${query}"`);
         allResults.push(...nodes);
       }
       if (facts.length > 0) {
-        this.log(`    ✅ [GRAPH] Found ${facts.length} facts for query: "${query}"`);
+        this.log(`    ✅[GRAPH] Found ${facts.length} facts for query: "${query}"`);
         facts.forEach((f) => {
           this.log(`       -> Fact: "${f.content}"`);
         });
@@ -379,7 +397,7 @@ Text: "${currentPrompt}"`;
       }
 
       if (nodes.length === 0 && facts.length === 0) {
-        this.log(`    ❌ [GRAPH] No results for query: "${query}"`);
+        this.log(`    ❌[GRAPH] No results for query: "${query}"`);
       }
     }
 
@@ -398,7 +416,7 @@ Text: "${currentPrompt}"`;
     }
     allResults = Array.from(uniqueMap.values());
 
-    this.log(`  📊 [SYNTHESIZER] Total unique matches: ${allResults.length}`);
+    this.log(`  📊[SYNTHESIZER] Total unique matches: ${allResults.length} `);
 
     // 3. Memory Horizon (Temporal Filter)
     // Ensures we don't inject things that are already in the visible context
@@ -411,13 +429,21 @@ Text: "${currentPrompt}"`;
     // 3) Older memories (deeper resonance)
     deduplicated.sort((a, b) => {
       // Boosted first
-      if (a._boosted && !b._boosted) return -1;
-      if (!a._boosted && b._boosted) return 1;
+      if (a._boosted && !b._boosted) {
+        return -1;
+      }
+      if (!a._boosted && b._boosted) {
+        return 1;
+      }
       // Facts before Nodes (facts are more emotionally resonant)
       const aIsFact = a._sourceQuery?.includes("Fact") ?? false;
       const bIsFact = b._sourceQuery?.includes("Fact") ?? false;
-      if (aIsFact && !bIsFact) return -1;
-      if (!aIsFact && bIsFact) return 1;
+      if (aIsFact && !bIsFact) {
+        return -1;
+      }
+      if (!aIsFact && bIsFact) {
+        return 1;
+      }
       // Older memories first (deeper echoes)
       const aTs = a.timestamp || a.message?.created_at || a.message?.createdAt || 0;
       const bTs = b.timestamp || b.message?.created_at || b.message?.createdAt || 0;
@@ -428,13 +454,17 @@ Text: "${currentPrompt}"`;
     const seenContent = new Set<string>();
 
     for (const r of deduplicated) {
-      if (finalLines.length >= 3) break;
+      if (finalLines.length >= 3) {
+        break;
+      }
       let content = r.message?.content || r.text || r.content || "";
       // Strip timestamp tags
       content = content.replace(/\[TIMESTAMP:[^\]]+\]/g, "").trim();
 
       // Filter out technical JSON strings that might leak
-      if (content.startsWith("{") && content.endsWith("}")) continue;
+      if (content.startsWith("{") && content.endsWith("}")) {
+        continue;
+      }
 
       // TOUGH DEDUPLICATION: Strip fillers and normalize
       const fillerRegex = /^(oye|recuerda|sabias que|dime|hey|escucha)[,\s]*/gi;
@@ -446,7 +476,7 @@ Text: "${currentPrompt}"`;
 
       if (!normalizedForComparison || seenContent.has(normalizedForComparison)) {
         if (r._sourceQuery?.includes("Fact")) {
-          this.log(`  🗑️ [DEDUP] Dropping Fact (already seen): "${content}"`);
+          this.log(`  🗑️[DEDUP] Dropping Fact(already seen): "${content}"`);
         }
         continue;
       }
@@ -454,8 +484,12 @@ Text: "${currentPrompt}"`;
       seenContent.add(normalizedForComparison);
 
       let finalDate = r.message?.created_at ? new Date(r.message?.created_at) : new Date();
-      if (r.message?.createdAt) finalDate = new Date(r.message.createdAt);
-      if (r.timestamp) finalDate = new Date(r.timestamp);
+      if (r.message?.createdAt) {
+        finalDate = new Date(r.message.createdAt);
+      }
+      if (r.timestamp) {
+        finalDate = new Date(r.timestamp);
+      }
 
       // Check for common date tags (DATE, etc)
       const dateTagMatch = content.match(
@@ -483,12 +517,12 @@ Text: "${currentPrompt}"`;
       const prefix = isFact ? "[HECHO] " : "";
 
       if (isFact) {
-        this.log(`  ✨ [FINAL] Adding Fact to Resonance: "${content}"`);
+        this.log(`  ✨[FINAL] Adding Fact to Resonance: "${content}"`);
       }
 
       const sourceSuffix = r._boosted ? ` (⚡ via "${r._sourceQuery}")` : "";
 
-      finalLines.push(`- [${relativeTime}] ${prefix}${content}${sourceSuffix}`);
+      finalLines.push(`- [${relativeTime}] ${prefix}${content}${sourceSuffix} `);
     }
 
     if (finalLines.length === 0) {
@@ -497,20 +531,20 @@ Text: "${currentPrompt}"`;
     }
 
     const finalFlashback = `
----
-[SUBCONSCIOUS RESONANCE: FRAGMENTED ECHOES]
+      ---
+        [SUBCONSCIOUS RESONANCE: FRAGMENTED ECHOES]
 The following impressions from your past have "drifted" into your awareness. 
 They are not facts to be stated, but "feelings" or "vague recollections" of your history.
 Acknowledging them with a sense of continuity if they resonate with the present.
 
-${finalLines.join("\n")}
----
-`;
+        ${finalLines.join("\n")}
+      ---
+        `;
 
     // Only log the final resonance block if debug is on
     if (this.debug) {
-      this.log(`\n================================================`);
-      this.log(`🧠 [MIND] DRIFTING INTO RESONANCE:\n${finalFlashback}`);
+      this.log(`\n ================================================ `);
+      this.log(`🧠[MIND] DRIFTING INTO RESONANCE: \n${finalFlashback} `);
       this.log(`================================================\n`);
     }
 

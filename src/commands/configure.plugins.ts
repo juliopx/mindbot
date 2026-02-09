@@ -1,18 +1,19 @@
-import { buildPluginStatusReport } from "../plugins/status.js";
-import { writeConfigFile } from "../config/config.js";
-import { applyExclusiveSlotSelection } from "../plugins/slots.js";
 import type { OpenClawConfig } from "../config/types.js";
+import type { PluginRecord } from "../plugins/registry.js";
 import type { RuntimeEnv } from "../runtime.js";
 import type { WizardPrompter } from "../wizard/prompts.js";
+import { writeConfigFile } from "../config/config.js";
+import { applyExclusiveSlotSelection } from "../plugins/slots.js";
+import { buildPluginStatusReport } from "../plugins/status.js";
 import { guardCancel } from "./onboard-helpers.js";
-import type { PluginRecord } from "../plugins/registry.js";
-import { getPackageManifestMetadata } from "../plugins/manifest.js";
 
 function getNestedValue(obj: any, path: string): any {
   const keys = path.split(".");
   let current = obj;
   for (const key of keys) {
-    if (current === undefined || current === null || typeof current !== "object") return undefined;
+    if (current === undefined || current === null || typeof current !== "object") {
+      return undefined;
+    }
     current = current[key];
   }
   return current;
@@ -32,11 +33,15 @@ function setNestedValue(obj: any, path: string, value: any): void {
 }
 
 function getSchemaDefault(schema: any, path: string): any {
-  if (!schema || !schema.properties) return undefined;
+  if (!schema || !schema.properties) {
+    return undefined;
+  }
   const keys = path.split(".");
   let current = schema;
   for (const key of keys) {
-    if (!current.properties || !current.properties[key]) return undefined;
+    if (!current.properties || !current.properties[key]) {
+      return undefined;
+    }
     current = current.properties[key];
   }
   return current.default;
@@ -71,7 +76,7 @@ async function promptPluginEntryConfig(
     });
     if (slotResult.changed) {
       nextConfig = slotResult.config as any;
-      nextEntry = ((nextConfig.plugins as any)?.entries?.[pluginId] as any) ?? nextEntry;
+      nextEntry = (nextConfig.plugins as any)?.entries?.[pluginId] ?? nextEntry;
       if (slotResult.warnings.length > 0) {
         for (const w of slotResult.warnings) {
           await prompter.note(w, "Slot Selection");
@@ -116,9 +121,13 @@ async function promptPluginEntryConfig(
           const val = String(input).trim();
           let finalVal: any = val;
           // Simple type conversion for booleans/numbers if they look like it
-          if (val.toLowerCase() === "true") finalVal = true;
-          else if (val.toLowerCase() === "false") finalVal = false;
-          else if (/^\d+$/.test(val)) finalVal = Number.parseInt(val, 10);
+          if (val.toLowerCase() === "true") {
+            finalVal = true;
+          } else if (val.toLowerCase() === "false") {
+            finalVal = false;
+          } else if (/^\d+$/.test(val)) {
+            finalVal = Number.parseInt(val, 10);
+          }
 
           setNestedValue(nextPluginConfig, key, finalVal);
         }

@@ -207,6 +207,26 @@ export async function runDaemonStop(opts: DaemonLifecycleOptions = {}) {
     return;
   }
   if (!loaded) {
+    // If the primary service is not loaded, check for legacy services first.
+    if (process.platform === "darwin") {
+      const { uninstallLegacyLaunchAgents } = await import("../../daemon/launchd.js");
+      const uninstalled = await uninstallLegacyLaunchAgents({ env: process.env, stdout });
+      if (uninstalled.length > 0) {
+        emit({
+          ok: true,
+          result: "stopped",
+          message: `Stopped and removed ${uninstalled.length} legacy gateway service(s).`,
+          service: buildDaemonServiceSnapshot(service, false),
+        });
+        if (!json) {
+          defaultRuntime.log(
+            `Stopped and removed ${uninstalled.length} legacy gateway service(s).`,
+          );
+        }
+        return;
+      }
+    }
+
     const { lockPath } = resolveGatewayLockPath(process.env);
     const payload = await readLockPayload(lockPath);
     if (payload?.pid) {
@@ -220,7 +240,9 @@ export async function runDaemonStop(opts: DaemonLifecycleOptions = {}) {
           // Best effort: wait a bit and check
           for (let i = 0; i < 10; i++) {
             await new Promise((r) => setTimeout(r, 200));
-            if (!isAlive(payload.pid)) break;
+            if (!isAlive(payload.pid)) {
+              break;
+            }
           }
           if (isAlive(payload.pid)) {
             process.kill(payload.pid, "SIGKILL");

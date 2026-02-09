@@ -13,47 +13,83 @@ export function getRelativeTimeDescription(date: Date): string {
 
   const getDayPart = (d: Date) => {
     const hr = d.getHours();
-    if (hr >= 6 && hr < 13) return "in the morning";
-    if (hr >= 13 && hr < 20) return "in the afternoon";
-    if (hr >= 20 || hr < 1) return "at night";
+    if (hr >= 6 && hr < 13) {
+      return "in the morning";
+    }
+    if (hr >= 13 && hr < 20) {
+      return "in the afternoon";
+    }
+    if (hr >= 20 || hr < 1) {
+      return "at night";
+    }
     return "in the early morning";
   };
 
-  if (diffSec < 60) return "just a moment ago";
+  if (diffSec < 60) {
+    return "just a moment ago";
+  }
   if (diffMin < 60) {
-    if (diffMin === 1) return "a minute ago";
-    if (diffMin < 5) return "a few minutes ago";
+    if (diffMin === 1) {
+      return "a minute ago";
+    }
+    if (diffMin < 5) {
+      return "a few minutes ago";
+    }
     return `about ${diffMin} minutes ago`;
   }
 
   if (diffHr < 24) {
-    if (diffHr === 1) return "almost 1h ago";
-    if (diffHr < 3) return `less than ${diffHr + 1}h ago`;
-    if (diffHr < 6) return "a few hours ago";
+    if (diffHr === 1) {
+      return "almost 1h ago";
+    }
+    if (diffHr < 3) {
+      return `less than ${diffHr + 1}h ago`;
+    }
+    if (diffHr < 6) {
+      return "a few hours ago";
+    }
     return `this ${getDayPart(date).replace("in the ", "").replace("at ", "")}`;
   }
 
-  if (diffDays === 1) return `yesterday ${getDayPart(date)}`;
-  if (diffDays === 2) return `the day before yesterday ${getDayPart(date)}`;
-  if (diffDays < 7) return `${diffDays} days ago ${getDayPart(date)}`;
-  if (diffDays < 14) return "last week";
-  if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks ago`;
+  if (diffDays === 1) {
+    return `yesterday ${getDayPart(date)}`;
+  }
+  if (diffDays === 2) {
+    return `the day before yesterday ${getDayPart(date)}`;
+  }
+  if (diffDays < 7) {
+    return `${diffDays} days ago ${getDayPart(date)}`;
+  }
+  if (diffDays < 14) {
+    return "last week";
+  }
+  if (diffDays < 30) {
+    return `${Math.floor(diffDays / 7)} weeks ago`;
+  }
 
   if (diffMonths < 12) {
-    if (diffMonths === 1) return "1 month ago";
-    if (diffMonths < 11) return `${diffMonths} months ago`;
+    if (diffMonths === 1) {
+      return "1 month ago";
+    }
+    if (diffMonths < 11) {
+      return `${diffMonths} months ago`;
+    }
     return "almost a year ago";
   }
 
   if (diffYears === 1) {
     const monthsExtra = diffMonths % 12;
-    if (monthsExtra > 9) return "almost 2 years ago";
+    if (monthsExtra > 9) {
+      return "almost 2 years ago";
+    }
     return "a year and a few months ago";
   }
 
   if (diffYears < 5) {
     const monthsExtra = diffMonths % 12;
-    if (monthsExtra > 9) return `almost ${diffYears + 1} years ago`;
+    if (monthsExtra > 9) {
+      return `almost ${diffYears + 1} years ago`;
+    }
     return `${diffYears} years ago${monthsExtra >= 1 ? " or so" : ""}`;
   }
 

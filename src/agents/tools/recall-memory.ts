@@ -1,7 +1,7 @@
 import { Type } from "@sinclair/typebox";
 import type { AnyAgentTool } from "./common.js";
-import { jsonResult, readStringParam } from "./common.js";
 import { GraphService } from "../../services/memory/GraphService.js";
+import { jsonResult, readStringParam } from "./common.js";
 
 const RecallSchema = Type.Object({
   query: Type.String({
@@ -18,7 +18,7 @@ export function createRecallMemoryTool(graphService: GraphService): AnyAgentTool
     parameters: RecallSchema,
     execute: async (_toolCallId, params) => {
       const query = readStringParam(params, "query", { required: true });
-      const sessionId = (params as any).sessionId || "default-session";
+      const sessionId = params.sessionId || "default-session";
 
       try {
         const memories = await graphService.searchFacts(sessionId, query);

@@ -35,14 +35,15 @@ async function consumeStream(s: any, debug: boolean): Promise<StreamResult> {
   let streamError: string | undefined;
 
   for await (const chunk of s) {
-    const ch = chunk as any;
+    const ch = chunk;
 
     // Detect error events emitted by the stream (not thrown as exceptions)
     if (ch.type === "error") {
       streamError =
         ch.error?.errorMessage || ch.error?.message || ch.reason || "unknown stream error";
-      if (debug)
+      if (debug) {
         process.stderr.write(`  🧩 [DEBUG] Subconscious stream error event: ${streamError}\n`);
+      }
       break;
     }
 
@@ -86,8 +87,9 @@ export function createSubconsciousAgent(opts: SubconsciousAgentOptions): Subcons
       try {
         const key = (await authStorage.getApiKey(model.provider)) as string;
         if (!key) {
-          if (debug)
+          if (debug) {
             process.stderr.write(`  ⚠️ [DEBUG] Subconscious: No API key for ${model.provider}\n`);
+          }
           return { text: "" };
         }
 
@@ -95,7 +97,9 @@ export function createSubconsciousAgent(opts: SubconsciousAgentOptions): Subcons
           let baseUrl = model.baseUrl || "default";
           if (!model.baseUrl && key && key.includes("proxy-ep=")) {
             const match = key.match(/proxy-ep=([^;]+)/);
-            if (match) baseUrl = `[Derived] ${match[1]}`;
+            if (match) {
+              baseUrl = `[Derived] ${match[1]}`;
+            }
           }
           process.stderr.write(
             `  🧩 [DEBUG] Subconscious stream open: ${model.provider}/${model.id} (API: ${model.api}) @ ${baseUrl}\n`,
@@ -161,7 +165,9 @@ export function createSubconsciousAgent(opts: SubconsciousAgentOptions): Subcons
           }
         }
       } catch (e: any) {
-        if (debug) process.stderr.write(`  ❌ [DEBUG] Subconscious LLM error: ${e.message}\n`);
+        if (debug) {
+          process.stderr.write(`  ❌ [DEBUG] Subconscious LLM error: ${e.message}\n`);
+        }
       }
       return { text: fullText };
     },

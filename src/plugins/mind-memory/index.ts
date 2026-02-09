@@ -1,6 +1,7 @@
 import { complete } from "@mariozechner/pi-ai";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import { resolveModel } from "../../agents/pi-embedded-runner/model.js";
 import { ConsolidationService } from "../../services/memory/ConsolidationService.js";
 import { GraphService } from "../../services/memory/GraphService.js";
@@ -49,7 +50,9 @@ export default function register(api: any) {
           if (options.bootstrap) {
             api.logger.info("📖 Generating historical autobiography...");
             const sessionId = "global-user-memory";
-            const memoryDir = config.memoryDir || path.join(process.cwd(), "memory");
+            const agentId = resolveDefaultAgentId(api.config);
+            const workspaceDir = resolveAgentWorkspaceDir(api.config, agentId);
+            const memoryDir = config.memoryDir || path.join(workspaceDir, "memory");
             const storyPath = path.join(path.dirname(memoryDir), "STORY.md");
 
             // We need a lightweight agent for this
@@ -123,9 +126,11 @@ export default function register(api: any) {
       const sessionId = "global-user-memory";
       try {
         // Bootstrap historical episodes BEFORE flashback retrieval (if graph is empty)
+        const agentId = resolveDefaultAgentId(api.config);
+        const workspaceDir = resolveAgentWorkspaceDir(api.config, agentId);
         const memoryDir =
           api.config?.plugins?.entries?.["mind-memory"]?.config?.memoryDir ||
-          `${process.cwd()}/memory`;
+          path.join(workspaceDir, "memory");
         await consolidator.bootstrapHistoricalEpisodes(sessionId, memoryDir);
 
         const flashbacks = await subconscious.getFlashback(

@@ -9,7 +9,11 @@ import { isSubagentSessionKey } from "../../routing/session-key.js";
 import { resolveUserPath } from "../../utils.js";
 import { isMarkdownCapableMessageChannel } from "../../utils/message-channel.js";
 import { resolveOpenClawAgentDir } from "../agent-paths.js";
-import { resolveSessionAgentId, resolveAgentConfig } from "../agent-scope.js";
+import {
+  resolveSessionAgentId,
+  resolveAgentConfig,
+  resolveAgentWorkspaceDir,
+} from "../agent-scope.js";
 import {
   isProfileInCooldown,
   markAuthProfileFailure,
@@ -74,7 +78,13 @@ export async function runEmbeddedPiAgent(
   const provider = (params.provider ?? DEFAULT_PROVIDER).trim() || DEFAULT_PROVIDER;
   const modelId = (params.model ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
   const agentDir = params.agentDir ?? resolveOpenClawAgentDir();
-  const resolvedWorkspace = params.workspaceDir ? resolveUserPath(params.workspaceDir) : agentDir;
+  const agentId = resolveSessionAgentId({
+    sessionKey: params.sessionKey,
+    config: params.config,
+  });
+  const resolvedWorkspace = params.workspaceDir
+    ? resolveUserPath(params.workspaceDir)
+    : resolveAgentWorkspaceDir(params.config ?? {}, agentId);
   const fallbackConfigured = (params.config?.agents?.defaults?.model?.fallbacks?.length ?? 0) > 0;
   await ensureOpenClawModelsJson(params.config, agentDir);
 
@@ -287,10 +297,6 @@ export async function runEmbeddedPiAgent(
     autoBootstrapHistory: mindConfig?.config?.narrative?.autoBootstrapHistory ?? false,
   });
 
-  const agentId = resolveSessionAgentId({
-    sessionKey: params.sessionKey,
-    config: params.config,
-  });
   const agentConfig = resolveAgentConfig(params.config ?? {}, agentId);
 
   // Resolve identity context for narrative updates

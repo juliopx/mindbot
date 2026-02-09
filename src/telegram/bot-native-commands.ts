@@ -1,4 +1,6 @@
 import type { Bot, Context } from "grammy";
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { CommandArgs } from "../auto-reply/commands-registry.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { ChannelGroupPolicy } from "../config/group-policy.js";
@@ -9,6 +11,7 @@ import type {
   TelegramTopicConfig,
 } from "../config/types.js";
 import type { RuntimeEnv } from "../runtime.js";
+import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { resolveEffectiveMessagesConfig } from "../agents/identity.js";
 import { resolveChunkMode } from "../auto-reply/chunk.js";
 import {
@@ -39,6 +42,8 @@ import {
 } from "../plugins/commands.js";
 import { resolveAgentRoute } from "../routing/resolve-route.js";
 import { resolveThreadSessionKeys } from "../routing/session-key.js";
+import { GraphService } from "../services/memory/GraphService.js";
+import { resolveUserPath } from "../utils.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import { firstDefined, isSenderAllowed, normalizeAllowFromWithStore } from "./bot-access.js";
 import { TelegramUpdateKeyContext } from "./bot-updates.js";
@@ -361,6 +366,11 @@ export const registerTelegramNativeCommands = ({
     })),
     ...pluginCommands,
     ...customCommands,
+    { command: "story", description: "Muestra el contenido actual de STORY.md" },
+    {
+      command: "remember",
+      description: "Busca en la memoria de Mind (ej: /remember quien es Julio)",
+    },
   ];
 
   if (allCommands.length > 0) {
@@ -665,6 +675,175 @@ export const registerTelegramNativeCommands = ({
           });
         });
       }
+
+      // /story command handler
+      bot.command("story", async (ctx: TelegramNativeCommandContext) => {
+        const msg = ctx.message;
+        if (!msg) {
+          return;
+        }
+        if (shouldSkipUpdate(ctx)) {
+          return;
+        }
+
+        const auth = await resolveTelegramCommandAuth({
+          msg,
+          bot,
+          cfg,
+          telegramCfg,
+          allowFrom,
+          groupAllowFrom,
+          useAccessGroups,
+          resolveGroupPolicy,
+          resolveTelegramGroupConfig,
+          requireAuth: true,
+        });
+        if (!auth) {
+          return;
+        }
+
+        const { chatId, resolvedThreadId, isGroup } = auth;
+        const messageThreadId = (msg as { message_thread_id?: number }).message_thread_id;
+        const threadIdForSend = isGroup ? resolvedThreadId : messageThreadId;
+
+        try {
+          // Resolve STORY.md path favoring configured workspace
+          const mindConfig = cfg.plugins?.entries?.["mind-memory"] as any;
+          const memoryDirOverride = mindConfig?.config?.memoryDir;
+          const defaultAgentId = resolveDefaultAgentId(cfg);
+
+          let storyPathResolved: string;
+          if (memoryDirOverride) {
+            storyPathResolved = path.join(
+              path.dirname(resolveUserPath(memoryDirOverride)),
+              "STORY.md",
+            );
+          } else {
+            const workspaceDir = resolveAgentWorkspaceDir(cfg, defaultAgentId);
+            storyPathResolved = path.join(workspaceDir, "STORY.md");
+          }
+
+          const content = await fs
+            .readFile(storyPathResolved, "utf-8")
+            .catch(() => "STORY.md no encontrado o vacío.");
+          const tableMode = resolveMarkdownTableMode({ cfg, channel: "telegram", accountId });
+          const chunkMode = resolveChunkMode(cfg, "telegram", accountId);
+
+          await deliverReplies({
+            replies: [{ text: content }],
+            chatId: String(chatId),
+            token: opts.token,
+            runtime,
+            bot,
+            replyToMode,
+            textLimit,
+            messageThreadId: threadIdForSend ?? undefined,
+            tableMode,
+            chunkMode,
+            linkPreview: false,
+          });
+        } catch (err: any) {
+          runtime.error?.(danger(`telegram /story failed: ${err.message}`));
+          await bot.api.sendMessage(chatId, `Error al leer STORY.md: ${err.message}`, {
+            message_thread_id: threadIdForSend ?? undefined,
+          });
+        }
+      });
+
+      // /remember command handler
+      bot.command("remember", async (ctx: TelegramNativeCommandContext) => {
+        const msg = ctx.message;
+        if (!msg) {
+          return;
+        }
+        if (shouldSkipUpdate(ctx)) {
+          return;
+        }
+
+        const auth = await resolveTelegramCommandAuth({
+          msg,
+          bot,
+          cfg,
+          telegramCfg,
+          allowFrom,
+          groupAllowFrom,
+          useAccessGroups,
+          resolveGroupPolicy,
+          resolveTelegramGroupConfig,
+          requireAuth: true,
+        });
+        if (!auth) {
+          return;
+        }
+
+        const { chatId, resolvedThreadId, isGroup } = auth;
+        const messageThreadId = (msg as { message_thread_id?: number }).message_thread_id;
+        const threadIdForSend = isGroup ? resolvedThreadId : messageThreadId;
+
+        const query = ctx.match?.trim();
+        if (!query) {
+          await bot.api.sendMessage(
+            chatId,
+            "Por favor, proporciona una consulta. Ejemplo: /remember quien es Julio",
+            {
+              message_thread_id: threadIdForSend ?? undefined,
+            },
+          );
+          return;
+        }
+
+        try {
+          const mindConfig = cfg.plugins?.entries?.["mind-memory"] as any;
+          const graphitiUrl = mindConfig?.config?.graphiti?.baseUrl || "http://localhost:8001";
+          const debug = !!mindConfig?.config?.debug;
+          const graph = new GraphService(graphitiUrl, debug);
+          const sessionId = "global-user-memory";
+
+          const [nodes, facts] = await Promise.all([
+            graph.searchNodes(sessionId, query),
+            graph.searchFacts(sessionId, query),
+          ]);
+
+          const results: string[] = [];
+          if (nodes.length > 0) {
+            results.push("🔍 *NODES*");
+            nodes.forEach((n: any, i: number) => {
+              results.push(`${i + 1}. ${n.content}`);
+            });
+          }
+          if (facts.length > 0) {
+            results.push("\n🔍 *FACTS*");
+            facts.forEach((f: any, i: number) => {
+              const content = typeof f === "string" ? f : f.content || JSON.stringify(f);
+              results.push(`${i + 1}. ${content}`);
+            });
+          }
+
+          const responseText =
+            results.length > 0 ? results.join("\n") : "No se encontraron memorias relevantes.";
+          const tableMode = resolveMarkdownTableMode({ cfg, channel: "telegram", accountId });
+          const chunkMode = resolveChunkMode(cfg, "telegram", accountId);
+
+          await deliverReplies({
+            replies: [{ text: responseText }],
+            chatId: String(chatId),
+            token: opts.token,
+            runtime,
+            bot,
+            replyToMode,
+            textLimit,
+            messageThreadId: threadIdForSend,
+            tableMode,
+            chunkMode,
+            linkPreview: false,
+          });
+        } catch (err: any) {
+          runtime.error?.(danger(`telegram /remember failed: ${err.message}`));
+          await bot.api.sendMessage(chatId, `Error al consultar la memoria: ${err.message}`, {
+            message_thread_id: threadIdForSend ?? undefined,
+          });
+        }
+      });
     }
   } else if (nativeDisabledExplicit) {
     withTelegramApiErrorLogging({

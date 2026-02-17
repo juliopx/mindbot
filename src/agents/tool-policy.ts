@@ -26,6 +26,7 @@ export const TOOL_GROUPS: Record<string, string[]> = {
     "sessions_history",
     "sessions_send",
     "sessions_spawn",
+    "subagents",
     "session_status",
   ],
   // UI helpers
@@ -49,6 +50,7 @@ export const TOOL_GROUPS: Record<string, string[]> = {
     "sessions_history",
     "sessions_send",
     "sessions_spawn",
+    "subagents",
     "session_status",
     "remember",
     "journal_memory_search",
@@ -289,4 +291,14 @@ export function resolveToolProfilePolicy(profile?: string): ToolProfilePolicy | 
     allow: resolved.allow ? [...resolved.allow] : undefined,
     deny: resolved.deny ? [...resolved.deny] : undefined,
   };
+}
+
+export function mergeAlsoAllowPolicy<TPolicy extends { allow?: string[] }>(
+  policy: TPolicy | undefined,
+  alsoAllow?: string[],
+): TPolicy | undefined {
+  if (!policy?.allow || !Array.isArray(alsoAllow) || alsoAllow.length === 0) {
+    return policy;
+  }
+  return { ...policy, allow: Array.from(new Set([...policy.allow, ...alsoAllow])) };
 }

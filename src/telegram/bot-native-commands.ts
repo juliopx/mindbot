@@ -20,7 +20,12 @@ import { createReplyPrefixOptions } from "../channels/reply-prefix.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { ChannelGroupPolicy } from "../config/group-policy.js";
 import { resolveMarkdownTableMode } from "../config/markdown-tables.js";
-import { resolveTelegramCustomCommands } from "../config/telegram-custom-commands.js";
+import {
+  normalizeTelegramCommandDescription,
+  normalizeTelegramCommandName,
+  resolveTelegramCustomCommands,
+  TELEGRAM_COMMAND_NAME_PATTERN,
+} from "../config/telegram-custom-commands.js";
 import type {
   ReplyToMode,
   TelegramAccountConfig,
@@ -308,12 +313,33 @@ export const registerTelegramNativeCommands = ({
     nativeEnabled && nativeSkillsEnabled
       ? listSkillCommandsForAgents(boundAgentIds ? { cfg, agentIds: boundAgentIds } : { cfg })
       : [];
-  const nativeCommands = nativeEnabled
+  const nativeCommandsRaw = nativeEnabled
     ? listNativeCommandSpecsForConfig(cfg, {
         skillCommands,
         provider: "telegram",
       })
     : [];
+  const nativeCommands = nativeCommandsRaw
+    .map((command) => ({
+      ...command,
+      name: normalizeTelegramCommandName(command.name),
+      description: normalizeTelegramCommandDescription(command.description),
+    }))
+    .filter((command) => {
+      if (!TELEGRAM_COMMAND_NAME_PATTERN.test(command.name)) {
+        runtime.error?.(
+          danger(
+            `Telegram native command "/${command.name}" is invalid (use a-z, 0-9, underscore; max 32 chars).`,
+          ),
+        );
+        return false;
+      }
+      if (!command.description) {
+        runtime.error?.(danger(`Telegram native command "/${command.name}" is missing a description.`));
+        return false;
+      }
+      return true;
+    });
   const reservedCommands = new Set(
     listNativeCommandSpecs().map((command) => command.name.toLowerCase()),
   );
@@ -731,6 +757,7 @@ export const registerTelegramNativeCommands = ({
           msg,
           bot,
           cfg,
+          accountId,
           telegramCfg,
           allowFrom,
           groupAllowFrom,
@@ -821,6 +848,7 @@ export const registerTelegramNativeCommands = ({
           msg,
           bot,
           cfg,
+          accountId,
           telegramCfg,
           allowFrom,
           groupAllowFrom,

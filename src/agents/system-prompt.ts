@@ -52,9 +52,12 @@ function buildMemorySection(params: {
   ) {
     return [];
   }
+  const hasGraphitiRecall = params.availableTools.has("remember");
   const lines = [
     "## Memory Recall",
-    "Before answering anything about prior work, decisions, dates, people, preferences, or todos: run journal_memory_search on MEMORY.md + memory/*.md; then use journal_memory_get to pull only the needed lines. If low confidence after search, say you checked.",
+    hasGraphitiRecall
+      ? "Before answering anything about prior work, decisions, dates, people, preferences, or todos: use both `remember` (knowledge graph) and `journal_memory_search` (MEMORY.md + memory/*.md); then use `journal_memory_get` to pull only the needed lines. If low confidence after search, say you checked."
+      : "Before answering anything about prior work, decisions, dates, people, preferences, or todos: run journal_memory_search on MEMORY.md + memory/*.md; then use journal_memory_get to pull only the needed lines. If low confidence after search, say you checked.",
     "MEMORY.md contains structured facts, data, decisions, and key references only — never narrative or prose.",
     "",
   ];

@@ -67,7 +67,7 @@ grow over time and lead to unexpectedly high context usage and more frequent
 compaction.
 
 > **Note:** `memory/*.md` daily files are **not** injected automatically. They
-> are accessed on demand via the `memory_search` and `memory_get` tools, so they
+> are accessed on demand via the `journal_memory_search` and `journal_memory_get` tools, so they
 > do not count against the context window unless the model explicitly reads them.
 
 Large files are truncated with a marker. The max per-file size is controlled by

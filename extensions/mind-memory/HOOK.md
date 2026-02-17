@@ -10,26 +10,36 @@ This hook provides tools for the agent to consciously query the Graphiti tempora
 
 ## Available Tools
 
-### `search_memory_nodes`
-Search for entities (nodes) in the knowledge graph.
+### `remember`
+Search the long-term knowledge graph for memories, facts, and entities related to a query.
 
-**Use when:** You need to find information about specific people, places, concepts, or entities mentioned in past conversations.
+**Use when:** You need to explicitly recall information from previous conversations or specific details about the user that might not be in the immediate context.
 
 **Example:**
 ```
 User: "What do you know about my project?"
-Agent uses: search_memory_nodes(query: "user's project")
+Agent uses: remember(query: "user's project")
 ```
 
-### `search_memory_facts`
-Search for relationships and facts (edges) in the knowledge graph.
+### `journal_memory_search`
+Semantically search MEMORY.md (facts, data, decisions) and memory/*.md (daily logs) for relevant information.
 
-**Use when:** You need to find specific relationships or facts about entities.
+**Use when:** You need to find specific information from structured memory files or daily logs.
 
 **Example:**
 ```
 User: "What technologies am I using?"
-Agent uses: search_memory_facts(query: "technologies user is using")
+Agent uses: journal_memory_search(query: "technologies user is using")
+```
+
+### `journal_memory_get`
+Read specific snippets from memory files with optional line range.
+
+**Use when:** You need to pull exact content from memory files after finding relevant sections.
+
+**Example:**
+```
+After search: journal_memory_get(path: "MEMORY.md", from: 42, lines: 10)
 ```
 
 ## How It Works

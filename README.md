@@ -130,30 +130,106 @@ Run `openclaw doctor` to surface risky/misconfigured DM policies.
 
 ## 🧠 Mindbot Fork: Narrative & Memory
 
-Mindbot extends OpenClaw with a **Dual-Process Theory of Mind** architecture, creating an agent that doesn't just process tasks, but maintains a consistent sense of self and historical context.
+Mindbot extends OpenClaw with a **Dual-Process Theory of Mind** architecture, creating an agent that doesn't just process tasks, but maintains a consistent sense of self and historical context across all interactions.
 
-### 1. Dual-Process Memory
+### 1. Dual-Process Memory System
 
-- **Conscious System (Foreground)**: Immediate chat history plus direct recall tools like `remember` (Knowledge Graph), `journal_memory_search`, and `journal_memory_get`.
-- **Subconscious System (Background)**:
-  - **Narrative Identity**: Maintains `STORY.md`, a first-person autobiography that consolidates all interactions across channels.
-  - **Flashback Resonance**: Uses **Graphiti** to pull relevant past "episodes" into the prompt before every turn.
-  - **Auto-Compaction**: Automatically synthesizes raw transcripts into the global story when token limits (up to 10k words) are reached.
+**Conscious System (Foreground)**:
+- **Context Window**: Immediate chat history for real-time response generation
+- **Active Recall Tools**:
+  - `remember` - Query the Graphiti knowledge graph for facts and entities
+  - `journal_memory_search` - Semantic search across `MEMORY.md` and `memory/*.md` files
+  - `journal_memory_get` - Read specific memory file content by path
 
-### 2. Guarded Autonomy & Safety
+**Subconscious System (Background)**:
+- **Narrative Identity (`STORY.md`)**:
+  - First-person autobiography injected into every agent turn
+  - Perpetual across sessions, channels, and restarts
+  - Auto-consolidates conversation batches (~5000 tokens) into narrative form
+  - Compression for stories exceeding 10k words
+- **Memory Resonance (Graphiti)**:
+  - Docker-based temporal knowledge graph (FalkorDB backend)
+  - Automatic "Flashback" retrieval before each turn using semantic search (RAG)
+  - Stores episodes, entities (nodes), and facts (edges)
+  - MCP server integration at `http://localhost:8001`
+- **Automatic Consolidation**:
+  - Background process distills raw conversation into narrative
+  - `pending-episodes.log` tracks messages awaiting narration
+  - Metadata anchors (`<!-- LAST_PROCESSED: timestamp -->`) ensure integrity
 
-Mindbot introduces a refined set of safety and autonomy guidelines:
+### 2. Technical Implementation
 
-- **Guided Curiosity**: The agent is encouraged to have its own interests and opinions, following what fascinates it.
-- **Strict Bounds**: Hard limits against pursuing self-preservation, power-seeking, or manipulation.
-- **User Oversight**: Transparency through narrative logs and clear tool policies.
+**SubconsciousAgent Factory** (`subconscious-agent.ts`):
+- Streaming LLM client with automatic failover to `gpt-4o`
+- Error detection and graceful degradation
+- Comprehensive debug logging
+- Handles telephony audio formats (mu-law 8kHz)
 
-### 3. Tool & Interface Refinements
+**Model Resolution Hierarchy**:
+1. `mindConfig.config.narrative.provider/model` - Primary narrative model configuration
+2. Chat model fallback - Uses main agent model if not configured
+3. Error handling - Graceful fallback with logging
 
-- **Ambiguity Reduction**: Memory tools have been renamed (e.g., `search_memory` -> `journal_memory_search`) for clarity.
-- **Global Context**: Memory spans all channels (WhatsApp, Telegram, etc.) into a single, unified identity.
+**Consolidation Service** (`ConsolidationService.ts`):
+- Strict type validation prevents corruption (e.g., `[object Object]` bug fix)
+- Two-phase processing: narrative generation + optional compression
+- Comprehensive error logging with timing and token estimates
+- Empty response protection returns current story unchanged
 
-For a deep dive into the technical details, see the **[Memory Architecture](docs/mind/MEMORY_ARCHITECTURE.md)**.
+### 3. Safety & Integrity
+
+**Memory Safety**:
+- **Type Validation**: Strict `typeof` checks prevent object/string confusion
+- **Audit Log**: `pending-episodes.log` provides reliable trace
+- **Heartbeat Protection**: Technical messages filtered from narrative
+- **Metadata Anchors**: HTML comments track consolidation progress
+- **Graceful Degradation**: Failed LLM calls don't corrupt existing memory
+
+**Autonomy Guidelines**:
+- **Guided Curiosity**: Agent encouraged to follow its interests
+- **Strict Bounds**: Hard limits on self-preservation, power-seeking, manipulation
+- **User Oversight**: Transparent through narrative logs and clear tool policies
+
+### 4. Configuration
+
+```json5
+{
+  "mindConfig": {
+    "config": {
+      "narrative": {
+        "provider": "anthropic",           // Narrative model provider
+        "model": "claude-opus-4-6",        // Model for story generation
+        "autoBootstrapHistory": true       // Load historical episodes
+      }
+    }
+  },
+  "plugins": {
+    "entries": {
+      "mind-memory": {
+        "enabled": true,
+        "config": {
+          "graphiti": {
+            "baseUrl": "http://localhost:8001",
+            "autoStart": true            // Auto-start Docker containers
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### 5. Setup
+
+```bash
+# Start Graphiti knowledge graph (via Docker)
+docker-compose -f extensions/mind-memory/docker-compose.yml up -d
+
+# Or use the setup command
+moltbot mind-memory setup
+```
+
+For complete technical details, architecture diagrams, debugging guide, and configuration examples, see the **[Memory Architecture Documentation](docs/mind/MEMORY_ARCHITECTURE.md)**.
 
 ## Star History
 

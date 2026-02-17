@@ -216,14 +216,92 @@ export class ConsolidationService {
 
     // DEBUG: Log the COMPLETE prompt being sent to LLM - REMOVED PER USER REQUEST
 
+    const promptLength = prompt.length;
+    const promptTokensEstimate = Math.ceil(promptLength / 4); // rough estimate
+
     try {
+      const startTime = Date.now();
       const response = await agent.complete(prompt);
-      const rawStory = response?.text || "";
+      const elapsed = Date.now() - startTime;
+
+      this.log(
+        `🤖 [MIND] LLM call completed in ${elapsed}ms (prompt: ${promptLength} chars / ~${promptTokensEstimate} tokens)`,
+      );
+
+      if (!response) {
+        process.stderr.write(`❌ [MIND] LLM returned null/undefined response\n`);
+        process.stderr.write(`   Session ID: ${sessionId}\n`);
+        return currentStory;
+      }
+
+      // CRITICAL: Validate that response.text is actually a string, not an object
+
+      // Debug: Log what we received if it's not a string
+      if (typeof response?.text !== "string") {
+        process.stderr.write(
+          `⚠️ [MIND] Unexpected response.text type: ${typeof response?.text}\n`,
+        );
+        process.stderr.write(
+          `response.text value: ${JSON.stringify(response?.text)}\n`,
+        );
+        if (response) {
+          process.stderr.write(
+            `Full response keys: ${Object.keys(response).join(", ")}\n`,
+          );
+        }
+      }
+
+      let rawStory =
+        typeof response?.text === "string" ? response.text : "";
+
+      if (rawStory.length === 0) {
+        process.stderr.write(`⚠️ [MIND] LLM returned empty string\n`);
+        process.stderr.write(`   Prompt length: ${promptLength} chars / ~${promptTokensEstimate} tokens\n`);
+        process.stderr.write(`   Elapsed: ${elapsed}ms\n`);
+      }
 
       // DEBUG: Log first 300 chars - REMOVED PER USER REQUEST
 
       // Use the complete generated story directly
-      let newStory = rawStory;
+      // Ensure newStory is always a string with proper validation
+      let newStory = "";
+
+      if (typeof rawStory === "string") {
+        newStory = rawStory;
+      } else if (rawStory && typeof rawStory === "object") {
+        // If it's an object, try to extract text from common properties
+        const obj = rawStory as any;
+        newStory = obj.content || obj.message || obj.response || "";
+
+        if (!newStory) {
+          process.stderr.write(
+            `❌ [MIND] Story update error: LLM returned object instead of string\n`,
+          );
+          process.stderr.write(
+            `Response type: ${typeof rawStory}, keys: ${Object.keys(obj).join(", ")}\n`,
+          );
+          try {
+            process.stderr.write(`Full response: ${JSON.stringify(response, null, 2)}\n`);
+            process.stderr.write(
+              `response.text type: ${typeof response?.text}, is null: ${response?.text === null}\n`,
+            );
+          } catch (e) {
+            process.stderr.write(`Cannot stringify response: ${e}\n`);
+          }
+          return currentStory;
+        }
+      }
+
+      if (!newStory || newStory.trim().length === 0) {
+        process.stderr.write(`❌ [MIND] Story update error: LLM returned empty response\n`);
+        process.stderr.write(`   Session ID: ${sessionId}\n`);
+        process.stderr.write(`   Messages count: ${Array.isArray(oldMessages) ? oldMessages.length : "N/A"}\n`);
+        process.stderr.write(`   Current story length: ${currentStory?.length || 0} chars\n`);
+        process.stderr.write(
+          `   This indicates the LLM failed to generate narrative text. Check model configuration.\n`,
+        );
+        return currentStory;
+      }
 
       // COMPRESSION: If story exceeds 10000 words, compress it
       const MAX_STORY_WORDS = 10000;
@@ -257,7 +335,28 @@ ${newStory}
 (Provide the complete compressed autobiography, starting directly with the story.)`;
 
         const compressionResponse = await agent.complete(compressionPrompt);
-        const compressedStory = compressionResponse?.text || newStory;
+        // CRITICAL: Validate that response.text is actually a string, not an object
+        let compressedStory =
+          typeof compressionResponse?.text === "string" ? compressionResponse.text : "";
+
+        // Validate compression response with same logic
+        if (typeof compressedStory === "string") {
+          // Good, it's already a string
+        } else if (compressedStory && typeof compressedStory === "object") {
+          const obj = compressedStory as any;
+          compressedStory = obj.content || obj.message || obj.response || "";
+
+          if (!compressedStory) {
+            process.stderr.write(
+              `⚠️ [MIND] Compression returned object instead of string, keeping uncompressed\n`,
+            );
+            compressedStory = newStory;
+          }
+        } else {
+          // Fallback to uncompressed if we can't extract text
+          compressedStory = newStory;
+        }
+
         const compressedWordCount = compressedStory.split(/\s+/).length;
 
         this.log(
@@ -299,6 +398,13 @@ ${newStory}
     } catch (error: unknown) {
       process.stderr.write(
         `❌ [MIND] Story update error: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      if (error instanceof Error && error.stack) {
+        process.stderr.write(`   Stack: ${error.stack}\n`);
+      }
+      process.stderr.write(`   Session ID: ${sessionId}\n`);
+      process.stderr.write(
+        `   Messages: ${Array.isArray(oldMessages) ? oldMessages.length : "N/A"}\n`,
       );
     }
 

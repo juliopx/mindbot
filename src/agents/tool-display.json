@@ -284,6 +284,11 @@
       "title": "Session Status",
       "detailKeys": ["sessionKey", "model"]
     },
+    "remember": {
+      "emoji": "💭",
+      "title": "Remember",
+      "detailKeys": ["query"]
+    },
     "journal_memory_search": {
       "emoji": "🧠",
       "title": "Journal Memory Search",

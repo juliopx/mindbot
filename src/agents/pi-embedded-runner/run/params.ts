@@ -107,4 +107,8 @@ export type RunEmbeddedPiAgentParams = {
   streamParams?: AgentStreamParams;
   ownerNumbers?: string[];
   enforceFinalTag?: boolean;
+  /** Narrative story context from mind-memory for system prompt injection. */
+  narrativeStory?: string;
+  /** Callback when history messages are truncated (for mind-memory narrativization). */
+  onHistoryTruncated?: (dropped: unknown[]) => Promise<void>;
 };

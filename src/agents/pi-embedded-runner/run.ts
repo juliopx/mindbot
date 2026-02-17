@@ -1,3 +1,4 @@
+// Main runner for embedded agent execution
 import fs from "node:fs/promises";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
@@ -465,6 +466,223 @@ export async function runEmbeddedPiAgent(
       const usageAccumulator = createUsageAccumulator();
       let lastRunPromptUsage: ReturnType<typeof normalizeUsage> | undefined;
       let autoCompactionCount = 0;
+
+      // [MIND] Read STORY.md for narrative context injection
+      let narrativeStory: string | undefined;
+      const mindConfig = params.config?.plugins?.entries?.["mind-memory"] as any;
+      const isMindEnabled =
+        mindConfig?.enabled && (mindConfig?.config?.narrative?.enabled ?? true);
+      if (isMindEnabled && !isProbeSession) {
+        try {
+          const path = await import("node:path");
+          const { isSubagentSessionKey } = await import("../../routing/session-key.js");
+          const isSubagent = params.sessionKey ? isSubagentSessionKey(params.sessionKey) : false;
+
+          if (!isSubagent) {
+            const storyPath = path.join(resolvedWorkspace, "STORY.md");
+            narrativeStory = await fs.readFile(storyPath, "utf-8").catch(() => undefined);
+            if (narrativeStory && process.stderr.isTTY) {
+              process.stderr.write(
+                `📖 [MIND] Story loaded (${narrativeStory.length} chars)\n`,
+              );
+            }
+          }
+        } catch (err) {
+          log.warn(`[MIND] Failed to load STORY.md: ${String(err)}`);
+        }
+      }
+
+      // [MIND] Memory consolidation and flashback retrieval
+      let mindExtraSystemPrompt = "";
+      if (isMindEnabled && !isProbeSession) {
+        const path = await import("node:path");
+        const { isSubagentSessionKey } = await import("../../routing/session-key.js");
+        const isSubagent = params.sessionKey ? isSubagentSessionKey(params.sessionKey) : false;
+
+        if (!isSubagent) {
+          try {
+            const storyPath = path.join(resolvedWorkspace, "STORY.md");
+            const memoryDir = path.join(path.dirname(storyPath), "memory");
+            const debug = !!(mindConfig?.config as any)?.debug;
+
+            // Detect heartbeat prompt
+            const isHeartbeatPrompt =
+              params.prompt.includes("Read HEARTBEAT.md") &&
+              params.prompt.includes("reply HEARTBEAT_OK");
+
+            if (!isHeartbeatPrompt) {
+              const { ConsolidationService } = await import(
+                "../../services/memory/ConsolidationService.js"
+              );
+              const { GraphService } = await import(
+                "../../services/memory/GraphService.js"
+              );
+              const { SessionManager } = await import("@mariozechner/pi-coding-agent");
+
+              const gUrl =
+                (mindConfig?.config as any)?.graphiti?.baseUrl || "http://localhost:8001";
+              const gs = new GraphService(gUrl, debug);
+              const cons = new ConsolidationService(gs, debug);
+              const globalSessionId = "global-user-memory";
+
+              // 1. Bootstrap historical episodes from legacy memory files
+              try {
+                const sessionMgr = SessionManager.open(params.sessionFile);
+                const sessionMessages = sessionMgr.buildSessionContext().messages || [];
+                await cons.bootstrapHistoricalEpisodes(
+                  params.sessionId,
+                  memoryDir,
+                  sessionMessages,
+                );
+                if (debug) {
+                  process.stderr.write(`🧠 [MIND] Historical episodes bootstrapped\n`);
+                }
+              } catch (e: any) {
+                if (debug) {
+                  process.stderr.write(
+                    `⚠️ [MIND] Bootstrap historical episodes failed: ${e.message}\n`,
+                  );
+                }
+              }
+
+              // 2. Global narrative sync (sync old sessions to STORY.md)
+              try {
+                const { resolveSessionTranscriptsDir } = await import(
+                  "../../config/sessions/paths.js"
+                );
+                const sessionsDir = resolveSessionTranscriptsDir();
+                const safeTokenLimit = Math.floor((ctxInfo.tokens || 50000) * 0.5);
+
+                // Resolve narrative model from config or fallback to chat model
+                const narrativeProvider =
+                  (mindConfig?.config as any)?.narrative?.provider || params.provider;
+                const narrativeModel =
+                  (mindConfig?.config as any)?.narrative?.model || params.model;
+
+                let narrativeLLM = model;
+
+                // If a different model is configured for narratives, resolve it
+                if (
+                  narrativeProvider !== params.provider ||
+                  narrativeModel !== params.model
+                ) {
+                  if (debug) {
+                    process.stderr.write(
+                      `🎨 [MIND] Narrative uses custom model: ${narrativeProvider}/${narrativeModel} (chat: ${params.provider}/${params.model})\n`,
+                    );
+                  }
+
+                  const { resolveModel } = await import("./model.js");
+                  const resolved = resolveModel(
+                    narrativeProvider,
+                    narrativeModel,
+                    agentDir,
+                    params.config,
+                  );
+
+                  if (resolved.model) {
+                    narrativeLLM = resolved.model;
+                  } else if (debug) {
+                    process.stderr.write(
+                      `⚠️ [MIND] Could not resolve narrative model: ${resolved.error}. Using chat model.\n`,
+                    );
+                  }
+                } else if (debug) {
+                  process.stderr.write(
+                    `🤖 [MIND] Using chat model for narrative: ${params.provider}/${params.model}\n`,
+                  );
+                }
+
+                // Create subconscious agent using the factory
+                const { createSubconsciousAgent } = await import("./subconscious-agent.js");
+                const subconsciousAgent = createSubconsciousAgent({
+                  model: narrativeLLM,
+                  authStorage,
+                  modelRegistry,
+                  debug,
+                  autoBootstrapHistory: (mindConfig?.config as any)?.narrative?.autoBootstrapHistory ?? false,
+                });
+
+                await cons.syncGlobalNarrative(
+                  sessionsDir,
+                  storyPath,
+                  subconsciousAgent,
+                  undefined,
+                  safeTokenLimit,
+                  params.sessionFile, // exclude current session
+                );
+
+                // Reload story after sync
+                narrativeStory = await fs.readFile(storyPath, "utf-8").catch(() => undefined);
+                if (debug && narrativeStory) {
+                  process.stderr.write(
+                    `📖 [MIND] Story reloaded after sync (${narrativeStory.length} chars)\n`,
+                  );
+                }
+              } catch (e: any) {
+                if (debug) {
+                  process.stderr.write(`⚠️ [MIND] Global narrative sync failed: ${e.message}\n`);
+                }
+              }
+
+              // 3. Store user message in Graphiti
+              try {
+                await gs.addEpisode(globalSessionId, `human: ${params.prompt}`);
+                if (debug) {
+                  process.stderr.write(
+                    `📝 [MIND] Episode stored for Global ID: ${globalSessionId}\n`,
+                  );
+                }
+              } catch (e: any) {
+                if (debug) {
+                  process.stderr.write(`⚠️ [MIND] Failed to store episode: ${e.message}\n`);
+                }
+              }
+
+              // 4. Get flashbacks (semantic memory retrieval)
+              const skipResonance = process.env.MIND_SKIP_RESONANCE === "1";
+              if (!skipResonance) {
+                try {
+                  // Search for relevant memories (nodes in the knowledge graph)
+                  const flashbacks = await gs.searchNodes(globalSessionId, params.prompt);
+
+                  if (flashbacks && flashbacks.length > 0) {
+                    const flashbacksText = flashbacks
+                      .map(
+                        (fb: any, idx: number) =>
+                          `[Flashback ${idx + 1}] ${fb.content || fb.text || ""}`,
+                      )
+                      .join("\n\n");
+
+                    mindExtraSystemPrompt = `\n\n# Resonant Memories\n\nThese are relevant memories from your past that resonate with the current conversation:\n\n${flashbacksText}\n\nUse these memories to inform your response, but don't explicitly mention them unless directly relevant.`;
+
+                    if (debug) {
+                      process.stderr.write(
+                        `✨ [MIND] ${flashbacks.length} flashbacks retrieved\n`,
+                      );
+                    }
+                  } else if (debug) {
+                    process.stderr.write(`🔍 [MIND] No relevant flashbacks found\n`);
+                  }
+                } catch (e: any) {
+                  if (debug) {
+                    process.stderr.write(`⚠️ [MIND] Flashback retrieval failed: ${e.message}\n`);
+                  }
+                }
+              } else if (debug) {
+                process.stderr.write(`⏭️  [MIND] Flashback retrieval skipped (MIND_SKIP_RESONANCE=1)\n`);
+              }
+            } else if (debug) {
+              process.stderr.write(
+                `💓 [MIND] Heartbeat detected - skipping memory storage & consolidation.\n`,
+              );
+            }
+          } catch (err) {
+            log.warn(`[MIND] Memory processing failed: ${String(err)}`);
+          }
+        }
+      }
+
       try {
         while (true) {
           attemptedThinking.add(thinkLevel);
@@ -472,6 +690,160 @@ export async function runEmbeddedPiAgent(
 
           const prompt =
             provider === "anthropic" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt;
+
+          // [MIND] Wrap onAgentEvent to sync STORY.md after auto-compaction
+          const wrappedOnAgentEvent =
+            isMindEnabled && params.sessionKey && !isProbeSession
+              ? (evt: { stream: string; data: Record<string, unknown> }) => {
+                  if (
+                    evt.stream === "compaction" &&
+                    evt.data.phase === "end" &&
+                    !evt.data.willRetry
+                  ) {
+                    // Fire-and-forget: narrate compacted-away messages to STORY.md
+                    (async () => {
+                      try {
+                        const path = await import("node:path");
+                        const { SessionManager } = await import(
+                          "@mariozechner/pi-coding-agent"
+                        );
+                        const { isSubagentSessionKey } = await import(
+                          "../../routing/session-key.js"
+                        );
+
+                        const isSubagent = isSubagentSessionKey(params.sessionKey!);
+                        if (isSubagent) return;
+
+                        const sm = SessionManager.open(params.sessionFile);
+
+                        // Full history from the .jsonl (all entries, including compacted ones)
+                        const allMessages = sm
+                          .getBranch()
+                          .filter((e: any) => e.type === "message")
+                          .filter((e: any) => e.message?.role !== "system")
+                          .map((e: any) => ({
+                            role: e.message?.role,
+                            text: e.message?.text || e.message?.content,
+                            timestamp: e.timestamp,
+                          }));
+
+                        // Messages currently in LLM context (post-compaction)
+                        const contextMessages = sm.buildSessionContext().messages || [];
+                        const contextTimestamps = new Set(
+                          contextMessages.map((m: any) => m.timestamp),
+                        );
+
+                        // Messages that got compacted away = in full history but NOT in current context
+                        const compactedMessages = allMessages.filter(
+                          (m: any) => m.timestamp && !contextTimestamps.has(m.timestamp),
+                        );
+
+                        if (compactedMessages.length === 0) {
+                          if (process.stderr.isTTY) {
+                            process.stderr.write(
+                              `🧠 [MIND] Auto-compaction detected — no new compacted messages to narrate.\n`,
+                            );
+                          }
+                          return;
+                        }
+
+                        if (process.stderr.isTTY) {
+                          process.stderr.write(
+                            `🧠 [MIND] Auto-compaction detected — narrating ${compactedMessages.length} compacted messages to STORY.md...\n`,
+                          );
+                        }
+
+                        const { ConsolidationService } = await import(
+                          "../../services/memory/ConsolidationService.js"
+                        );
+                        const { GraphService } = await import(
+                          "../../services/memory/GraphService.js"
+                        );
+                        const gUrl =
+                          (mindConfig?.config as any)?.graphiti?.baseUrl ||
+                          "http://localhost:8001";
+                        const debug = !!(mindConfig?.config as any)?.debug;
+                        const gs = new GraphService(gUrl, debug);
+                        const cons = new ConsolidationService(gs, debug);
+
+                        const storyPath = path.join(resolvedWorkspace, "STORY.md");
+                        const safeTokenLimit = Math.floor((ctxInfo.tokens || 50000) * 0.5);
+
+                        // Resolve narrative model from config or fallback to chat model
+                        const narrativeProvider =
+                          (mindConfig?.config as any)?.narrative?.provider || params.provider;
+                        const narrativeModel =
+                          (mindConfig?.config as any)?.narrative?.model || params.model;
+
+                        let narrativeLLM = model;
+
+                        // If a different model is configured for narratives, resolve it
+                        if (
+                          narrativeProvider !== params.provider ||
+                          narrativeModel !== params.model
+                        ) {
+                          if (debug) {
+                            process.stderr.write(
+                              `🎨 [MIND] Post-compaction uses custom model: ${narrativeProvider}/${narrativeModel}\n`,
+                            );
+                          }
+
+                          const { resolveModel } = await import("./model.js");
+                          const { resolveOpenClawAgentDir } = await import("../agent-paths.js");
+                          const resolved = resolveModel(
+                            narrativeProvider,
+                            narrativeModel,
+                            params.agentDir ?? resolveOpenClawAgentDir(),
+                            params.config,
+                          );
+
+                          if (resolved.model) {
+                            narrativeLLM = resolved.model;
+                          } else if (debug) {
+                            process.stderr.write(
+                              `⚠️ [MIND] Could not resolve narrative model for post-compaction: ${resolved.error}\n`,
+                            );
+                          }
+                        } else if (debug) {
+                          process.stderr.write(
+                            `🤖 [MIND] Using chat model for post-compaction: ${params.provider}/${params.model}\n`,
+                          );
+                        }
+
+                        // Create subconscious agent using the factory
+                        const { createSubconsciousAgent } = await import("./subconscious-agent.js");
+                        const subconsciousAgent = createSubconsciousAgent({
+                          model: narrativeLLM,
+                          authStorage,
+                          modelRegistry,
+                          debug,
+                          autoBootstrapHistory: (mindConfig?.config as any)?.narrative?.autoBootstrapHistory ?? false,
+                        });
+
+                        await cons.syncStoryWithSession(
+                          compactedMessages,
+                          storyPath,
+                          subconsciousAgent,
+                          undefined,
+                          safeTokenLimit,
+                        );
+
+                        if (process.stderr.isTTY) {
+                          process.stderr.write(
+                            `✅ [MIND] Post-compaction STORY.md sync complete.\n`,
+                          );
+                        }
+                      } catch (e: any) {
+                        process.stderr.write(
+                          `❌ [MIND] Post-compaction story sync failed: ${e.message}\n`,
+                        );
+                      }
+                    })();
+                  }
+                  // Always forward the event to the original handler
+                  params.onAgentEvent?.(evt);
+                }
+              : params.onAgentEvent;
 
           const attempt = await runEmbeddedAttempt({
             sessionId: params.sessionId,
@@ -524,12 +896,15 @@ export async function runEmbeddedPiAgent(
             onReasoningStream: params.onReasoningStream,
             onReasoningEnd: params.onReasoningEnd,
             onToolResult: params.onToolResult,
-            onAgentEvent: params.onAgentEvent,
-            extraSystemPrompt: params.extraSystemPrompt,
+            onAgentEvent: wrappedOnAgentEvent,
+            extraSystemPrompt: [params.extraSystemPrompt, mindExtraSystemPrompt]
+              .filter(Boolean)
+              .join("\n\n"),
             inputProvenance: params.inputProvenance,
             streamParams: params.streamParams,
             ownerNumbers: params.ownerNumbers,
             enforceFinalTag: params.enforceFinalTag,
+            narrativeStory,
           });
 
           const {

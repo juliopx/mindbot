@@ -122,7 +122,9 @@ function createMinimalRun(params?: {
 describe("runReplyAgent typing (heartbeat)", () => {
   it("signals typing on block replies", async () => {
     const onBlockReply = vi.fn();
-    runEmbeddedPiAgentMock.mockImplementationOnce(async (params: EmbeddedPiAgentParams) => {
+    runEmbeddedPiAgentMock.mockImplementationOnce(async (params: {
+      onBlockReply?: (payload: { text?: string; mediaUrls?: string[] }) => Promise<void> | void;
+    }) => {
       await params.onBlockReply?.({ text: "chunk", mediaUrls: [] });
       return { payloads: [{ text: "final" }], meta: {} };
     });
@@ -145,7 +147,9 @@ describe("runReplyAgent typing (heartbeat)", () => {
   });
   it("signals typing on tool results", async () => {
     const onToolResult = vi.fn();
-    runEmbeddedPiAgentMock.mockImplementationOnce(async (params: EmbeddedPiAgentParams) => {
+    runEmbeddedPiAgentMock.mockImplementationOnce(async (params: {
+      onToolResult?: (payload: { text?: string; mediaUrls?: string[] }) => Promise<void> | void;
+    }) => {
       await params.onToolResult?.({ text: "tooling", mediaUrls: [] });
       return { payloads: [{ text: "final" }], meta: {} };
     });
@@ -164,7 +168,9 @@ describe("runReplyAgent typing (heartbeat)", () => {
   });
   it("skips typing for silent tool results", async () => {
     const onToolResult = vi.fn();
-    runEmbeddedPiAgentMock.mockImplementationOnce(async (params: EmbeddedPiAgentParams) => {
+    runEmbeddedPiAgentMock.mockImplementationOnce(async (params: {
+      onToolResult?: (payload: { text?: string; mediaUrls?: string[] }) => Promise<void> | void;
+    }) => {
       await params.onToolResult?.({ text: "NO_REPLY", mediaUrls: [] });
       return { payloads: [{ text: "final" }], meta: {} };
     });
@@ -183,8 +189,8 @@ describe("runReplyAgent typing (heartbeat)", () => {
       await fs.mkdtemp(path.join(tmpdir(), "openclaw-compaction-")),
       "sessions.json",
     );
-    const sessionEntry = { sessionId: "session", updatedAt: Date.now() };
-    const sessionStore = { main: sessionEntry };
+    const sessionEntry = { sessionId: "session", updatedAt: Date.now() } as SessionEntry;
+    const sessionStore: Record<string, SessionEntry> = { main: sessionEntry };
 
     runEmbeddedPiAgentMock.mockImplementationOnce(
       async (params: {
@@ -211,5 +217,34 @@ describe("runReplyAgent typing (heartbeat)", () => {
     expect(payloads[0]?.text).toContain("Auto-compaction complete");
     expect(payloads[0]?.text).toContain("count 1");
     expect(sessionStore.main.compactionCount).toBe(1);
+  });
+
+  it("does not block finalization when a tool-result callback hangs", async () => {
+    vi.useFakeTimers();
+    try {
+      const onToolResult = vi.fn(() => new Promise<void>(() => {}));
+      runEmbeddedPiAgentMock.mockImplementationOnce(async (params: {
+        onToolResult?: (payload: { text?: string; mediaUrls?: string[] }) => Promise<void> | void;
+      }) => {
+        Promise.resolve(params.onToolResult?.({ text: "tooling", mediaUrls: [] })).catch(
+          () => {},
+        );
+        return { payloads: [{ text: "final" }], meta: {} };
+      });
+
+      const { run } = createMinimalRun({
+        typingMode: "message",
+        opts: { onToolResult, toolResultTimeoutMs: 10 },
+      });
+
+      const runPromise = run();
+      await vi.advanceTimersByTimeAsync(20);
+      const result = await runPromise;
+
+      expect(result).toMatchObject({ text: "final" });
+      expect(onToolResult).toHaveBeenCalledWith({ text: "tooling", mediaUrls: [] });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

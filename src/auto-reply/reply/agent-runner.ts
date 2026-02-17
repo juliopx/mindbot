@@ -43,6 +43,7 @@ import { persistSessionUsageUpdate } from "./session-usage.js";
 import { createTypingSignaler } from "./typing-mode.js";
 
 const BLOCK_REPLY_SEND_TIMEOUT_MS = 15_000;
+const TOOL_RESULT_DRAIN_TIMEOUT_MS = 8_000;
 
 export async function runReplyAgent(params: {
   commandBody: string;
@@ -126,6 +127,10 @@ export async function runReplyAgent(params: {
 
   const pendingToolTasks = new Set<Promise<void>>();
   const blockReplyTimeoutMs = opts?.blockReplyTimeoutMs ?? BLOCK_REPLY_SEND_TIMEOUT_MS;
+  const toolResultDrainTimeoutMs =
+    typeof opts?.toolResultTimeoutMs === "number" && Number.isFinite(opts.toolResultTimeoutMs)
+      ? Math.max(0, Math.floor(opts.toolResultTimeoutMs))
+      : TOOL_RESULT_DRAIN_TIMEOUT_MS;
 
   const replyToChannel =
     sessionCtx.OriginatingChannel ??
@@ -368,7 +373,25 @@ export async function runReplyAgent(params: {
       blockReplyPipeline.stop();
     }
     if (pendingToolTasks.size > 0) {
-      await Promise.allSettled(pendingToolTasks);
+      const settlePending = Promise.allSettled(pendingToolTasks);
+      if (toolResultDrainTimeoutMs <= 0) {
+        await settlePending;
+      } else {
+        const drainState = await new Promise<"settled" | "timeout">((resolve) => {
+          const timeoutId = setTimeout(() => {
+            resolve("timeout");
+          }, toolResultDrainTimeoutMs);
+          void settlePending.finally(() => {
+            clearTimeout(timeoutId);
+            resolve("settled");
+          });
+        });
+        if (drainState === "timeout") {
+          defaultRuntime.log(
+            `tool result drain timed out after ${toolResultDrainTimeoutMs}ms; continuing reply finalization`,
+          );
+        }
+      }
     }
 
     const usage = runResult.meta.agentMeta?.usage;
@@ -419,7 +442,6 @@ export async function runReplyAgent(params: {
       accountId: sessionCtx.AccountId,
     });
     const { replyPayloads } = payloadResult;
-    didLogHeartbeatStrip = payloadResult.didLogHeartbeatStrip;
 
     if (replyPayloads.length === 0) {
       return finalizeWithFollowup(undefined, queueKey, runFollowupTurn);

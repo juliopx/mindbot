@@ -551,9 +551,9 @@ Text: "${currentPrompt}"`;
 You are the AI remembering your past interactions with the user.
 CRITICAL: Write the memories in the EXACT SAME LANGUAGE as the CURRENT USER MESSAGE below.
 Keep it fluid, natural, and conversational.
-Do not use log formats ("human", "assistant", literal timestamps), remove all that.
+Do not use log formats ("human", "assistant"), remove all that.
 Maintain a bulleted list format, one memory per line.
-Be concise.
+The raw memories include fuzzy relative timestamps like [hace 2 semanas] or [yesterday morning]. Incorporate them naturally into each sentence (e.g. "Hace dos semanas Julio me preguntó...") rather than keeping them as bracketed labels.
 ${soulContext ? `\n=== YOUR UNIQUE PERSONA (SOUL) ===\n${soulContext}\n=========================\nYou MUST write these memories adopting this personality, tone, and worldview.\n` : ""}${storyContext ? `\n=== YOUR ONGOING NARRATIVE (STORY) ===\n${storyContext}\n=========================\nUse this as background context to better understand the relationship and history with the user.\n` : ""}
 CURRENT USER MESSAGE (Detect language from this):
 "${currentPrompt}"
@@ -578,15 +578,11 @@ ${finalLines.join("\n")}`;
     }
 
     const finalFlashback = `
-      ---
-        [SUBCONSCIOUS RESONANCE: FRAGMENTED ECHOES]
-Below are fragmented impressions from your past that have "drifted" into your awareness like a smell or a song bringing back a memory.
-These are YOUR memories. Internalize them as first-person emotional context, not as facts from a database.
-Acknowledge them with a sense of continuity if they resonate with the present conversation, but do not recite them like a log.
-
-        ${rewrittenLines}
-      ---
-        `;
+---
+[SUBCONSCIOUS RESONANCE]
+${rewrittenLines}
+---
+`;
 
     // Only log the final resonance block if debug is on
     if (this.debug) {

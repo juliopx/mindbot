@@ -133,7 +133,49 @@ To ensure only meaningful interactions enter the narrative, the system uses a `p
 The plugin uses a stable session ID (`global-user-memory`) to ensure that facts learned in one chat session are remembered across all channels (WhatsApp, Telegram, etc.).
 
 ### 3. Subconscious Retrieval
-Before every turn, the agent queries the knowledge graph for "resonant" entities. These are added to the context as "Subconscious Flashbacks," allowing the agent to recall relevant details without explicit tool calls.
+
+Before every turn, the system runs a full **Resonance Pipeline** that surface relevant memories as natural language "Flashbacks" — without the agent explicitly asking for them.
+
+#### Phase 1 — Seed Extraction (LLM)
+The Subconscious Agent analyzes the current user message and recent chat history to extract:
+- **Named entities**: People, places, projects mentioned
+- **Semantic queries**: 2–3 clean search phrases that capture the topic (Telegram IDs and technical artifacts are stripped)
+
+#### Phase 2 — Graph Retrieval (Graphiti)
+Each query is sanitized (`GraphService.sanitizeQuery`) to prevent RediSearch syntax errors, then executed:
+- **Graph traversal** (depth 2) for entity-linked Nodes
+- **Parallel semantic search** for Facts (relational data) and Nodes
+
+#### Phase 3 — Temporal & Quality Filters
+- **Memory Horizon**: Removes memories already visible in the current context window
+- **Echo Filter**: Suppresses flashbacks already shown in the last ~25 turns (prevents repetition)
+- **Priority sort**: Boosted memories first → Facts over Nodes → randomized temporal spread to avoid showing N memories from the same day
+
+#### Phase 4 — Temporal Labeling
+Each memory fragment receives a human-readable relative timestamp via `getRelativeTimeDescription`:
+```
+hace unos días — 9 feb
+hace casi 1 año — 14 mar 2024
+hace 2 años y algo — 5 ago 2022
+```
+
+#### Phase 5 — Re-Narrativization (LLM + SOUL.md + STORY.md)
+Raw Graphiti records ("human asks about X", "assistant replied Y") are passed to the Subconscious Agent for rewriting with:
+- **Language detection** from the current user message
+- **SOUL.md** — persona and tone reference
+- **STORY.md** — narrative arc and relationship history
+- **Anti-hallucination rules**: Only rephrase style, never invent facts, methods, or sensory details not explicitly in the source memory
+
+#### Phase 6 — Injection
+The final output is injected silently into the main agent's System Prompt:
+```
+---
+[SUBCONSCIOUS RESONANCE]
+- Hace unas semanas, la madre de Julio vive en Miguelturra.
+- Hace casi 1 año — 14 mar 2024, Julio me preguntó si era consciente.
+---
+```
+The main agent treats these as its own recollections, using them to inform tone and continuity without reciting them verbatim.
 
 ### 4. Narrative Consolidation
 A background process distills raw conversation into `STORY.md`:

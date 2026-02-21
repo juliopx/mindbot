@@ -671,6 +671,11 @@ export async function runEmbeddedPiAgent(
                 const sessionsDir = resolveSessionTranscriptsDir();
                 const safeTokenLimit = Math.floor((ctxInfo.tokens || 50000) * 0.5);
 
+                // Notify user if verbose mode is on
+                if (params.verboseLevel) {
+                  await params.onBlockReply?.({ text: "🧠 _Updating memory narrative…_" });
+                }
+
                 await cons.syncGlobalNarrative(
                   sessionsDir,
                   storyPath,
@@ -916,6 +921,14 @@ export async function runEmbeddedPiAgent(
                         });
 
                         const { retryAsync } = await import("../../infra/retry.js");
+
+                        // Notify user if verbose mode is on
+                        if (params.verboseLevel) {
+                          await params.onBlockReply?.({
+                            text: `🧠 _Updating memory narrative (${compactedMessages.length} messages)…_`,
+                          });
+                        }
+
                         await retryAsync(
                           () =>
                             cons.syncStoryWithSession(

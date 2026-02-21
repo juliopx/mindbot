@@ -371,6 +371,7 @@ Text: "${currentPrompt}"`;
     oldestContextTimestamp?: Date,
     recentMessages: RecentMessage[] = [],
     soulContext?: string,
+    storyContext?: string,
   ): Promise<string> {
     this.log("🧠 [MIND] Subconscious is exploring memories...");
 
@@ -553,7 +554,7 @@ Keep it fluid, natural, and conversational.
 Do not use log formats ("human", "assistant", literal timestamps), remove all that.
 Maintain a bulleted list format, one memory per line.
 Be concise.
-${soulContext ? `\n=== YOUR UNIQUE PERSONA (SOUL) ===\n${soulContext}\n=========================\nYou MUST write these memories adopting this personality, tone, and worldview.\n` : ""}
+${soulContext ? `\n=== YOUR UNIQUE PERSONA (SOUL) ===\n${soulContext}\n=========================\nYou MUST write these memories adopting this personality, tone, and worldview.\n` : ""}${storyContext ? `\n=== YOUR ONGOING NARRATIVE (STORY) ===\n${storyContext}\n=========================\nUse this as background context to better understand the relationship and history with the user.\n` : ""}
 CURRENT USER MESSAGE (Detect language from this):
 "${currentPrompt}"
 

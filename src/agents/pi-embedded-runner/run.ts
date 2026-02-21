@@ -725,6 +725,7 @@ export async function runEmbeddedPiAgent(
                     undefined,
                     [],
                     soulContext,
+                    narrativeStory,
                   );
 
                   if (flashbackText) {

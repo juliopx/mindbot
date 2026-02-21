@@ -390,10 +390,10 @@ export const registerTelegramNativeCommands = ({
       .filter((cmd): cmd is { command: string; description: string } => cmd !== null),
     ...(nativeEnabled ? pluginCatalog.commands : []),
     ...customCommands,
-    { command: "story", description: "Muestra el contenido actual de STORY.md" },
+    { command: "story", description: "Show the current content of STORY.md" },
     {
       command: "remember",
-      description: "Busca en la memoria de Mind (ej: /remember quien es Julio)",
+      description: "Search Mind's memory (e.g. /remember who is Alice)",
     },
   ];
   const { commandsToRegister, totalCommands, maxCommands, overflowCount } =
@@ -819,7 +819,7 @@ export const registerTelegramNativeCommands = ({
 
           const content = await fs
             .readFile(storyPathResolved, "utf-8")
-            .catch(() => "STORY.md no encontrado o vacío.");
+            .catch(() => "STORY.md not found or empty.");
           const tableMode = resolveMarkdownTableMode({ cfg, channel: "telegram", accountId });
           const chunkMode = resolveChunkMode(cfg, "telegram", accountId);
 
@@ -844,7 +844,7 @@ export const registerTelegramNativeCommands = ({
           await bot.api.sendMessage(chatId, `❌ Error: ${errorMessage}`, {
             message_thread_id: threadIdForSend ?? undefined,
           });
-          await bot.api.sendMessage(chatId, `Error al leer STORY.md: ${errorMessage}`, {
+          await bot.api.sendMessage(chatId, `Error reading STORY.md: ${errorMessage}`, {
             message_thread_id: threadIdForSend ?? undefined,
           });
         }
@@ -885,7 +885,7 @@ export const registerTelegramNativeCommands = ({
         if (!query) {
           await bot.api.sendMessage(
             chatId,
-            "Por favor, proporciona una consulta. Ejemplo: /remember quien es Julio",
+            "Please provide a query. Example: /remember who is Alice",
             {
               message_thread_id: threadIdForSend ?? undefined,
             },

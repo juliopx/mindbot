@@ -445,29 +445,24 @@ Text: "${currentPrompt}"`;
     // 4. Echo Filter (Satiety)
     const deduplicated = this.applyEchoFilter(horizonFiltered);
 
-    // Sort to prioritize: 1) BOOSTED, 2) Facts over Nodes (facts are more personal/concise),
-    // 3) Older memories (deeper resonance)
+    // Deduplicate exact content early to allow variety, then sort to prioritize:
+    // 1) BOOSTED, 2) Facts over Nodes, 3) Interleaving old and new to avoid "all from same day"
     deduplicated.sort((a, b) => {
-      // Boosted first
-      if (a._boosted && !b._boosted) {
-        return -1;
-      }
-      if (!a._boosted && b._boosted) {
-        return 1;
-      }
-      // Facts before Nodes (facts are more emotionally resonant)
+      // First tier: Boosted
+      if (a._boosted && !b._boosted) return -1;
+      if (!a._boosted && b._boosted) return 1;
+
+      // Second tier: Facts over Nodes
       const aIsFact = a._sourceQuery?.includes("Fact") ?? false;
       const bIsFact = b._sourceQuery?.includes("Fact") ?? false;
-      if (aIsFact && !bIsFact) {
-        return -1;
-      }
-      if (!aIsFact && bIsFact) {
-        return 1;
-      }
-      // Older memories first (deeper echoes)
+      if (aIsFact && !bIsFact) return -1;
+      if (!aIsFact && bIsFact) return 1;
+
+      // Third tier: Pseudo-random distribution based on timestamp parity to mix old/new
       const aTs = a.timestamp || a.message?.created_at || a.message?.createdAt || 0;
       const bTs = b.timestamp || b.message?.created_at || b.message?.createdAt || 0;
-      return new Date(aTs).getTime() - new Date(bTs).getTime();
+      const timeDiff = new Date(aTs).getTime() - new Date(bTs).getTime();
+      return Math.random() > 0.5 ? timeDiff : -timeDiff;
     });
 
     const finalLines: string[] = [];
@@ -534,15 +529,12 @@ Text: "${currentPrompt}"`;
 
       const relativeTime = getRelativeTimeDescription(finalDate);
       const isFact = r._sourceQuery?.includes("Fact") ?? false;
-      const prefix = isFact ? "[HECHO] " : "";
 
       if (isFact) {
         this.log(`  ✨[FINAL] Adding Fact to Resonance: "${content}"`);
       }
 
-      const sourceSuffix = r._boosted ? ` (⚡ via "${r._sourceQuery}")` : "";
-
-      finalLines.push(`- [${relativeTime}] ${prefix}${content}${sourceSuffix} `);
+      finalLines.push(`- [${relativeTime}] ${content} `);
     }
 
     if (finalLines.length === 0) {
@@ -553,9 +545,9 @@ Text: "${currentPrompt}"`;
     const finalFlashback = `
       ---
         [SUBCONSCIOUS RESONANCE: FRAGMENTED ECHOES]
-The following impressions from your past have "drifted" into your awareness. 
-They are not facts to be stated, but "feelings" or "vague recollections" of your history.
-Acknowledging them with a sense of continuity if they resonate with the present.
+Below are fragmented impressions from your past that have "drifted" into your awareness like a smell or a song bringing back a memory.
+These are YOUR memories. Internalize them as first-person emotional context, not as facts from a database.
+Acknowledge them with a sense of continuity if they resonate with the present conversation, but do not recite them like a log.
 
         ${finalLines.join("\n")}
       ---

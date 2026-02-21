@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import {
   createAgentSession,
@@ -7,7 +8,6 @@ import {
   SessionManager,
   SettingsManager,
 } from "@mariozechner/pi-coding-agent";
-import path from "node:path";
 import { resolveHeartbeatPrompt } from "../../auto-reply/heartbeat.js";
 import type { ReasoningLevel, ThinkLevel } from "../../auto-reply/thinking.js";
 import { resolveChannelCapabilities } from "../../config/channel-capabilities.js";
@@ -656,12 +656,28 @@ export async function compactEmbeddedPiSessionDirect(
                 `📖 [MIND] Syncing ${session.messages.length} messages to ${storyPath} (limit: ${safeTokenLimit})\n`,
               );
             }
-            await cons.syncStoryWithSession(
-              session.messages,
-              storyPath,
-              subconsciousAgent,
-              undefined,
-              safeTokenLimit,
+            const { retryAsync } = await import("../../infra/retry.js");
+            await retryAsync(
+              () =>
+                cons.syncStoryWithSession(
+                  session.messages,
+                  storyPath,
+                  subconsciousAgent,
+                  undefined,
+                  safeTokenLimit,
+                ),
+              {
+                attempts: 2,
+                minDelayMs: 1000,
+                maxDelayMs: 10_000,
+                jitter: 0.2,
+                label: "pre-compaction-story-sync",
+                onRetry: ({ attempt, maxAttempts, delayMs, err }) => {
+                  process.stderr.write(
+                    `⚠️ [MIND] Pre-compaction story sync retry ${attempt}/${maxAttempts}: ${(err as Error).message}. Next in ${delayMs}ms...\n`,
+                  );
+                },
+              },
             );
             if (mindDebug) {
               process.stderr.write(`📖 [MIND] Story sync completed\n`);

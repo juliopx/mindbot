@@ -1,14 +1,34 @@
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { estimateTokens } from "@mariozechner/pi-coding-agent";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { getRelativeTimeDescription } from "../../utils/time-format.js";
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import { estimateTokens } from "@mariozechner/pi-coding-agent";
+import { withFileLock, type FileLockOptions } from "../../infra/file-lock.js";
 import { GraphService } from "./GraphService.js";
 import { buildStoryPrompt } from "./story-prompt-builder.js";
 
-// File-based lock to prevent concurrent narrative syncs across separate Node processes
-const NARRATIVE_LOCK_FILE = "/tmp/mind_narrative_sync.lock";
-const NARRATIVE_LOCK_MAX_AGE_MS = 120_000; // 2 minutes (stale lock detection)
+function extractTextFromUnknown(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+
+  const obj = value as Record<string, unknown>;
+  const textCandidate = obj.content ?? obj.message ?? obj.response;
+  return typeof textCandidate === "string" ? textCandidate : "";
+}
+
+/**
+ * Lock options for STORY.md writes. All three writers (syncGlobalNarrative,
+ * post-compaction syncStoryWithSession, pre-compaction syncStoryWithSession)
+ * funnel through updateNarrativeStory which acquires this lock.
+ * The lock file is created at `<storyPath>.lock`.
+ */
+const STORY_LOCK_OPTIONS: FileLockOptions = {
+  retries: { retries: 10, factor: 2, minTimeout: 200, maxTimeout: 15_000, randomize: true },
+  stale: 120_000, // 2 min stale detection
+};
 
 export class ConsolidationService {
   private readonly graph: GraphService;
@@ -52,12 +72,27 @@ export class ConsolidationService {
     try {
       // Check if bootstrap has already been done using a flag file
       const bootstrapFlagPath = path.join(memoryDir, ".graphiti-bootstrap-done");
+      const bootstrapProgressPath = path.join(memoryDir, ".graphiti-bootstrap-progress");
 
       try {
         await fs.access(bootstrapFlagPath);
         return;
       } catch {
         // Continue to bootstrap
+      }
+
+      // Load already-processed files from progress file (crash recovery)
+      let processedFiles: Set<string> = new Set();
+      try {
+        const progress = await fs.readFile(bootstrapProgressPath, "utf-8");
+        processedFiles = new Set(progress.split("\n").filter(Boolean));
+        if (processedFiles.size > 0) {
+          this.log(
+            `🔄 [MIND] Resuming bootstrap — ${processedFiles.size} items already processed.`,
+          );
+        }
+      } catch {
+        // No progress file yet
       }
 
       this.log(`📥 [MIND] No bootstrap flag found. Ingesting memory history into Graphiti...`);
@@ -67,6 +102,11 @@ export class ConsolidationService {
       const mdFiles = files.filter((f) => f.endsWith(".md")).toSorted();
 
       for (const file of mdFiles) {
+        if (processedFiles.has(file)) {
+          this.log(`⏭️ [MIND] Skipping already-ingested file: ${file}`);
+          continue;
+        }
+
         const filePath = path.join(memoryDir, file);
         const content = await fs.readFile(filePath, "utf-8");
 
@@ -87,10 +127,12 @@ export class ConsolidationService {
           episodeTimestamp,
           { source: "historical-file" },
         );
+
+        await fs.appendFile(bootstrapProgressPath, `${file}\n`);
       }
 
       // 2. Ingest Active Session Messages as a SINGLE Transcript Episode (Optimization)
-      if (sessionMessages.length > 0) {
+      if (sessionMessages.length > 0 && !processedFiles.has("__session_messages__")) {
         this.log(
           `📥 [MIND] Ingesting ${sessionMessages.length} previous turns as a single transcript batch...`,
         );
@@ -135,10 +177,16 @@ export class ConsolidationService {
           await this.graph.addEpisode("global-user-memory", transcriptBody, earliestIso, {
             source: "message",
           });
+          await fs.appendFile(bootstrapProgressPath, `__session_messages__\n`);
         }
       }
 
       await fs.writeFile(bootstrapFlagPath, new Date().toISOString());
+      try {
+        await fs.unlink(bootstrapProgressPath);
+      } catch {
+        // Progress file may not exist if no files were processed
+      }
       this.log(`🏁 [MIND] Bootstrap complete. Episodes queued for Graphiti.`);
     } catch (e: unknown) {
       process.stderr.write(
@@ -238,25 +286,20 @@ export class ConsolidationService {
 
       // Debug: Log what we received if it's not a string
       if (typeof response?.text !== "string") {
-        process.stderr.write(
-          `⚠️ [MIND] Unexpected response.text type: ${typeof response?.text}\n`,
-        );
-        process.stderr.write(
-          `response.text value: ${JSON.stringify(response?.text)}\n`,
-        );
+        process.stderr.write(`⚠️ [MIND] Unexpected response.text type: ${typeof response?.text}\n`);
+        process.stderr.write(`response.text value: ${JSON.stringify(response?.text)}\n`);
         if (response) {
-          process.stderr.write(
-            `Full response keys: ${Object.keys(response).join(", ")}\n`,
-          );
+          process.stderr.write(`Full response keys: ${Object.keys(response).join(", ")}\n`);
         }
       }
 
-      let rawStory =
-        typeof response?.text === "string" ? response.text : "";
+      const rawStory: unknown = response?.text;
 
-      if (rawStory.length === 0) {
+      if (typeof rawStory === "string" && rawStory.length === 0) {
         process.stderr.write(`⚠️ [MIND] LLM returned empty string\n`);
-        process.stderr.write(`   Prompt length: ${promptLength} chars / ~${promptTokensEstimate} tokens\n`);
+        process.stderr.write(
+          `   Prompt length: ${promptLength} chars / ~${promptTokensEstimate} tokens\n`,
+        );
         process.stderr.write(`   Elapsed: ${elapsed}ms\n`);
       }
 
@@ -270,8 +313,8 @@ export class ConsolidationService {
         newStory = rawStory;
       } else if (rawStory && typeof rawStory === "object") {
         // If it's an object, try to extract text from common properties
-        const obj = rawStory as any;
-        newStory = obj.content || obj.message || obj.response || "";
+        const obj = rawStory as Record<string, unknown>;
+        newStory = extractTextFromUnknown(rawStory);
 
         if (!newStory) {
           process.stderr.write(
@@ -286,7 +329,7 @@ export class ConsolidationService {
               `response.text type: ${typeof response?.text}, is null: ${response?.text === null}\n`,
             );
           } catch (e) {
-            process.stderr.write(`Cannot stringify response: ${e}\n`);
+            process.stderr.write(`Cannot stringify response: ${String(e)}\n`);
           }
           return currentStory;
         }
@@ -295,7 +338,9 @@ export class ConsolidationService {
       if (!newStory || newStory.trim().length === 0) {
         process.stderr.write(`❌ [MIND] Story update error: LLM returned empty response\n`);
         process.stderr.write(`   Session ID: ${sessionId}\n`);
-        process.stderr.write(`   Messages count: ${Array.isArray(oldMessages) ? oldMessages.length : "N/A"}\n`);
+        process.stderr.write(
+          `   Messages count: ${Array.isArray(oldMessages) ? oldMessages.length : "N/A"}\n`,
+        );
         process.stderr.write(`   Current story length: ${currentStory?.length || 0} chars\n`);
         process.stderr.write(
           `   This indicates the LLM failed to generate narrative text. Check model configuration.\n`,
@@ -336,24 +381,16 @@ ${newStory}
 
         const compressionResponse = await agent.complete(compressionPrompt);
         // CRITICAL: Validate that response.text is actually a string, not an object
+        const rawCompressedStory: unknown = compressionResponse?.text;
         let compressedStory =
-          typeof compressionResponse?.text === "string" ? compressionResponse.text : "";
+          typeof rawCompressedStory === "string"
+            ? rawCompressedStory
+            : extractTextFromUnknown(rawCompressedStory);
 
-        // Validate compression response with same logic
-        if (typeof compressedStory === "string") {
-          // Good, it's already a string
-        } else if (compressedStory && typeof compressedStory === "object") {
-          const obj = compressedStory as any;
-          compressedStory = obj.content || obj.message || obj.response || "";
-
-          if (!compressedStory) {
-            process.stderr.write(
-              `⚠️ [MIND] Compression returned object instead of string, keeping uncompressed\n`,
-            );
-            compressedStory = newStory;
-          }
-        } else {
-          // Fallback to uncompressed if we can't extract text
+        if (!compressedStory) {
+          process.stderr.write(
+            `⚠️ [MIND] Compression returned object instead of string, keeping uncompressed\n`,
+          );
           compressedStory = newStory;
         }
 
@@ -387,9 +424,11 @@ ${newStory}
           contentToWrite = `<!-- LAST_PROCESSED: ${iso} -->\n\n${contentToWrite.trim()}`;
         }
 
-        const tmpPath = `${storyPath}.tmp`;
-        await fs.writeFile(tmpPath, contentToWrite, "utf-8");
-        await fs.rename(tmpPath, storyPath);
+        await withFileLock(storyPath, STORY_LOCK_OPTIONS, async () => {
+          const tmpPath = `${storyPath}.tmp`;
+          await fs.writeFile(tmpPath, contentToWrite, "utf-8");
+          await fs.rename(tmpPath, storyPath);
+        });
         this.log(
           `📖 [MIND] Narrative Story updated locally at ${storyPath} (${newStory.length} chars)`,
         );
@@ -415,7 +454,7 @@ ${newStory}
    * Processes legacy memory files (YYYY-MM-DD.md) and integrates them into the story.
    * This now concatenates ALL historical files into ONE transcript to avoid iteration issues.
    */
-  private async bootstrapFromLegacyMemory(
+  async bootstrapFromLegacyMemory(
     sessionId: string,
     storyPath: string,
     agent: { complete: (prompt: string) => Promise<{ text?: string }> },
@@ -533,33 +572,6 @@ ${newStory}
     currentSessionFile?: string,
   ): Promise<void> {
     try {
-      // Guard: file-based lock to prevent concurrent syncs across processes
-      try {
-        const lockStat = await fs.stat(NARRATIVE_LOCK_FILE);
-        const lockAge = Date.now() - lockStat.mtimeMs;
-        if (lockAge < NARRATIVE_LOCK_MAX_AGE_MS) {
-          this.log(
-            `⏭️ [MIND] Global Narrative Sync already in progress (lock age: ${Math.round(lockAge / 1000)}s) - skipping.`,
-          );
-          return;
-        }
-        // Lock is stale (>2min), process probably crashed - take over
-        this.log(
-          `⚠️ [MIND] Stale narrative lock detected (${Math.round(lockAge / 1000)}s old) - taking over.`,
-        );
-      } catch {
-        // Lock file doesn't exist - we're clear to proceed
-      }
-
-      // Acquire lock
-      await fs.writeFile(
-        NARRATIVE_LOCK_FILE,
-        JSON.stringify({
-          pid: process.pid,
-          startedAt: new Date().toISOString(),
-        }),
-      );
-
       this.log(`🌍 [MIND] Starting Global Narrative Sync (Limit: ${safeTokenLimit} tokens)...`);
 
       // 1. Neural Resonance (Graph Retrieval)
@@ -747,11 +759,6 @@ ${newStory}
       process.stderr.write(
         `❌ [MIND] Global Sync failed: ${e instanceof Error ? e.message : String(e)}\n`,
       );
-    } finally {
-      // Release file lock
-      try {
-        await fs.unlink(NARRATIVE_LOCK_FILE);
-      } catch {}
     }
   }
 

@@ -1,13 +1,26 @@
-import type { Command } from "commander";
-import { complete } from "@mariozechner/pi-ai";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { complete } from "@mariozechner/pi-ai";
+import type { Command } from "commander";
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import { resolveModel } from "../../agents/pi-embedded-runner/model.js";
 import { ConsolidationService } from "../../services/memory/ConsolidationService.js";
 import { GraphService } from "../../services/memory/GraphService.js";
-import { SubconsciousService } from "../../services/memory/SubconsciousService.js";
+import { SubconsciousService, type LLMClient } from "../../services/memory/SubconsciousService.js";
 import { ensureGraphitiDocker, installDocker } from "./docker.js";
+
+/** Typed shape of the mind-memory plugin config within the global config. */
+type MindMemoryPluginConfig = {
+  debug?: boolean;
+  memoryDir?: string;
+  graphiti?: { baseUrl?: string; autoStart?: boolean };
+  narrative?: {
+    enabled?: boolean;
+    autoBootstrapHistory?: boolean;
+    provider?: string;
+    model?: string;
+  };
+};
 
 interface PluginApi {
   config: Record<string, unknown>;
@@ -25,16 +38,23 @@ interface PluginApi {
   registerGatewayMethod: (
     id: string,
     cb: (ctx: {
-      params: unknown;
+      params: Record<string, unknown>;
       respond: (ok: boolean, payload?: unknown) => void;
     }) => Promise<void>,
   ) => void;
   registerTool: (tool: unknown) => void;
 }
 
+/** Extract the mind-memory plugin config from the global config. */
+function getMindMemoryConfig(globalConfig: Record<string, unknown>): MindMemoryPluginConfig {
+  const plugins = globalConfig?.plugins as Record<string, unknown> | undefined;
+  const entries = plugins?.entries as Record<string, Record<string, unknown>> | undefined;
+  const mindEntry = entries?.["mind-memory"];
+  return (mindEntry?.config as MindMemoryPluginConfig) || {};
+}
+
 export default function register(api: PluginApi) {
-  // Keeping this as any for now since it's a generic API
-  const config = api.config?.plugins?.entries?.["mind-memory"]?.config || {};
+  const config = getMindMemoryConfig(api.config);
   const graphitiUrl = config.graphiti?.baseUrl || "http://localhost:8001";
   const debug = !!config.debug;
 
@@ -120,19 +140,15 @@ export default function register(api: PluginApi) {
                 const bridge = {
                   complete: async (prompt: string) => {
                     // Bridge to pi-ai's complete function (external library with loose typing)
-                    const res = await complete(
-                      llm as unknown,
-                      { messages: [{ role: "user", content: prompt }] } as unknown,
+                    const res = await (complete as Function)(
+                      llm,
+                      { messages: [{ role: "user", content: prompt }] },
                       { apiKey: runtimeKey },
                     );
-                    return { text: (res as { content?: string }).content || "" };
+                    return { text: (res as unknown as { content?: string }).content || "" };
                   },
                 };
-                await (
-                  consolidator as unknown as {
-                    bootstrapFromLegacyMemory: (...a: unknown[]) => Promise<void>;
-                  }
-                ).bootstrapFromLegacyMemory(
+                await consolidator.bootstrapFromLegacyMemory(
                   sessionId,
                   storyPath,
                   bridge,
@@ -154,101 +170,67 @@ export default function register(api: PluginApi) {
 
   // 2. Register Gateway Methods for the core agent runner to call
   // This allows the runner to be decoupled from the internal implementation.
-  api.registerGatewayMethod(
-    "narrative.getFlashbacks",
-    async ({
-      params,
-      respond,
-    }: {
-      params: { prompt: string; oldestContextTimestamp?: string; llmClient: unknown };
-      respond: (ok: boolean, payload?: unknown) => void;
-    }) => {
-      const { prompt, oldestContextTimestamp, llmClient } = params;
-      // Use stable global ID to ensure memory persists across chat sessions
-      const sessionId = "global-user-memory";
-      try {
-        // Bootstrap historical episodes BEFORE flashback retrieval (if graph is empty)
-        const agentId = resolveDefaultAgentId(api.config);
-        const workspaceDir = resolveAgentWorkspaceDir(api.config, agentId);
-        const memoryDir =
-          api.config?.plugins?.entries?.["mind-memory"]?.config?.memoryDir ||
-          path.join(workspaceDir, "memory");
-        await consolidator.bootstrapHistoricalEpisodes(sessionId, memoryDir);
+  api.registerGatewayMethod("narrative.getFlashbacks", async ({ params, respond }) => {
+    const { prompt, oldestContextTimestamp, llmClient } = params as {
+      prompt: string;
+      oldestContextTimestamp?: string;
+      llmClient: unknown;
+    };
+    // Use stable global ID to ensure memory persists across chat sessions
+    const sessionId = "global-user-memory";
+    try {
+      // Bootstrap historical episodes BEFORE flashback retrieval (if graph is empty)
+      const agentId = resolveDefaultAgentId(api.config);
+      const workspaceDir = resolveAgentWorkspaceDir(api.config, agentId);
+      const memoryDir = config.memoryDir || path.join(workspaceDir, "memory");
+      await consolidator.bootstrapHistoricalEpisodes(sessionId, memoryDir);
 
-        const flashbacks = await subconscious.getFlashback(
-          sessionId,
-          prompt,
-          llmClient,
-          oldestContextTimestamp ? new Date(oldestContextTimestamp) : undefined,
-        );
-        respond(true, { flashbacks });
-      } catch (e: unknown) {
-        respond(false, { error: e instanceof Error ? e.message : String(e) });
-      }
-    },
-  );
+      const flashbacks = await subconscious.getFlashback(
+        sessionId,
+        prompt,
+        llmClient as LLMClient | null,
+        oldestContextTimestamp ? new Date(oldestContextTimestamp) : undefined,
+      );
+      respond(true, { flashbacks });
+    } catch (e: unknown) {
+      respond(false, { error: e instanceof Error ? e.message : String(e) });
+    }
+  });
 
   // REMOVED: narrative.consolidate gateway - Graphiti extracts entities automatically from episodes
 
-  api.registerGatewayMethod(
-    "narrative.addEpisode",
-    async ({
-      params,
-      respond,
-    }: {
-      params: { text: string };
-      respond: (ok: boolean, payload?: unknown) => void;
-    }) => {
-      const { text } = params;
-      const sessionId = "global-user-memory";
-      try {
-        await graphService.addEpisode(sessionId, text);
-        respond(true, { ok: true });
-      } catch (e: unknown) {
-        respond(false, { error: e instanceof Error ? e.message : String(e) });
-      }
-    },
-  );
+  api.registerGatewayMethod("narrative.addEpisode", async ({ params, respond }) => {
+    const { text } = params as { text: string };
+    const sessionId = "global-user-memory";
+    try {
+      await graphService.addEpisode(sessionId, text);
+      respond(true, { ok: true });
+    } catch (e: unknown) {
+      respond(false, { error: e instanceof Error ? e.message : String(e) });
+    }
+  });
 
-  api.registerGatewayMethod(
-    "narrative.searchNodes",
-    async ({
-      params,
-      respond,
-    }: {
-      params: { query: string };
-      respond: (ok: boolean, payload?: unknown) => void;
-    }) => {
-      const { query } = params;
-      const sessionId = "global-user-memory";
-      try {
-        const nodes = await graphService.searchNodes(sessionId, query);
-        respond(true, { nodes });
-      } catch (e: unknown) {
-        respond(false, { error: e instanceof Error ? e.message : String(e) });
-      }
-    },
-  );
+  api.registerGatewayMethod("narrative.searchNodes", async ({ params, respond }) => {
+    const { query } = params as { query: string };
+    const sessionId = "global-user-memory";
+    try {
+      const nodes = await graphService.searchNodes(sessionId, query);
+      respond(true, { nodes });
+    } catch (e: unknown) {
+      respond(false, { error: e instanceof Error ? e.message : String(e) });
+    }
+  });
 
-  api.registerGatewayMethod(
-    "narrative.searchFacts",
-    async ({
-      params,
-      respond,
-    }: {
-      params: { query: string };
-      respond: (ok: boolean, payload?: unknown) => void;
-    }) => {
-      const { query } = params;
-      const sessionId = "global-user-memory";
-      try {
-        const facts = await graphService.searchFacts(sessionId, query);
-        respond(true, { facts });
-      } catch (e: unknown) {
-        respond(false, { error: e instanceof Error ? e.message : String(e) });
-      }
-    },
-  );
+  api.registerGatewayMethod("narrative.searchFacts", async ({ params, respond }) => {
+    const { query } = params as { query: string };
+    const sessionId = "global-user-memory";
+    try {
+      const facts = await graphService.searchFacts(sessionId, query);
+      respond(true, { facts });
+    } catch (e: unknown) {
+      respond(false, { error: e instanceof Error ? e.message : String(e) });
+    }
+  });
 
   // 3. Register Explicit Tool for Conscious Memory Access
   api.registerTool({

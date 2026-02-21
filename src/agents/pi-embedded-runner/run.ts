@@ -62,6 +62,72 @@ import { describeUnknownError } from "./utils.js";
 
 type ApiKeyInfo = ResolvedProviderAuth;
 
+type MindMemoryPluginConfig = {
+  debug?: boolean;
+  graphiti?: { baseUrl?: string };
+  narrative?: {
+    enabled?: boolean;
+    provider?: string;
+    model?: string;
+    autoBootstrapHistory?: boolean;
+  };
+};
+
+type MindMemoryPluginEntry = {
+  enabled?: boolean;
+  config?: MindMemoryPluginConfig;
+};
+
+type SessionBranchMessageEntry = {
+  type?: unknown;
+  message?: {
+    role?: unknown;
+    text?: unknown;
+    content?: unknown;
+  };
+  timestamp?: unknown;
+};
+
+type SessionContextMessage = {
+  timestamp?: unknown;
+};
+
+const getMindMemoryPluginEntry = (value: unknown): MindMemoryPluginEntry | undefined => {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  return value as MindMemoryPluginEntry;
+};
+
+const messageTextFromUnknown = (value: unknown): string => {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((part) => {
+        if (typeof part === "string") {
+          return part;
+        }
+        if (part && typeof part === "object") {
+          const textCandidate = (part as { text?: unknown }).text;
+          return typeof textCandidate === "string" ? textCandidate : "";
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join(" ");
+  }
+  return "";
+};
+
+const isMessageBranchEntry = (entry: unknown): entry is SessionBranchMessageEntry => {
+  if (!entry || typeof entry !== "object") {
+    return false;
+  }
+  return (entry as SessionBranchMessageEntry).type === "message";
+};
+
 // Avoid Anthropic's refusal test token poisoning session transcripts.
 const ANTHROPIC_MAGIC_STRING_TRIGGER_REFUSAL = "ANTHROPIC_MAGIC_STRING_TRIGGER_REFUSAL";
 const ANTHROPIC_MAGIC_STRING_REPLACEMENT = "ANTHROPIC MAGIC STRING TRIGGER REFUSAL (redacted)";
@@ -469,9 +535,8 @@ export async function runEmbeddedPiAgent(
 
       // [MIND] Read STORY.md for narrative context injection
       let narrativeStory: string | undefined;
-      const mindConfig = params.config?.plugins?.entries?.["mind-memory"] as any;
-      const isMindEnabled =
-        mindConfig?.enabled && (mindConfig?.config?.narrative?.enabled ?? true);
+      const mindConfig = getMindMemoryPluginEntry(params.config?.plugins?.entries?.["mind-memory"]);
+      const isMindEnabled = mindConfig?.enabled && (mindConfig?.config?.narrative?.enabled ?? true);
       if (isMindEnabled && !isProbeSession) {
         try {
           const path = await import("node:path");
@@ -482,9 +547,7 @@ export async function runEmbeddedPiAgent(
             const storyPath = path.join(resolvedWorkspace, "STORY.md");
             narrativeStory = await fs.readFile(storyPath, "utf-8").catch(() => undefined);
             if (narrativeStory && process.stderr.isTTY) {
-              process.stderr.write(
-                `📖 [MIND] Story loaded (${narrativeStory.length} chars)\n`,
-              );
+              process.stderr.write(`📖 [MIND] Story loaded (${narrativeStory.length} chars)\n`);
             }
           }
         } catch (err) {
@@ -503,7 +566,7 @@ export async function runEmbeddedPiAgent(
           try {
             const storyPath = path.join(resolvedWorkspace, "STORY.md");
             const memoryDir = path.join(path.dirname(storyPath), "memory");
-            const debug = !!(mindConfig?.config as any)?.debug;
+            const debug = !!mindConfig?.config?.debug;
 
             // Detect heartbeat prompt
             const isHeartbeatPrompt =
@@ -511,16 +574,12 @@ export async function runEmbeddedPiAgent(
               params.prompt.includes("reply HEARTBEAT_OK");
 
             if (!isHeartbeatPrompt) {
-              const { ConsolidationService } = await import(
-                "../../services/memory/ConsolidationService.js"
-              );
-              const { GraphService } = await import(
-                "../../services/memory/GraphService.js"
-              );
+              const { ConsolidationService } =
+                await import("../../services/memory/ConsolidationService.js");
+              const { GraphService } = await import("../../services/memory/GraphService.js");
               const { SessionManager } = await import("@mariozechner/pi-coding-agent");
 
-              const gUrl =
-                (mindConfig?.config as any)?.graphiti?.baseUrl || "http://localhost:8001";
+              const gUrl = mindConfig?.config?.graphiti?.baseUrl || "http://localhost:8001";
               const gs = new GraphService(gUrl, debug);
               const cons = new ConsolidationService(gs, debug);
               const globalSessionId = "global-user-memory";
@@ -529,43 +588,34 @@ export async function runEmbeddedPiAgent(
               try {
                 const sessionMgr = SessionManager.open(params.sessionFile);
                 const sessionMessages = sessionMgr.buildSessionContext().messages || [];
-                await cons.bootstrapHistoricalEpisodes(
-                  params.sessionId,
-                  memoryDir,
-                  sessionMessages,
-                );
+                await cons.bootstrapHistoricalEpisodes(globalSessionId, memoryDir, sessionMessages);
                 if (debug) {
                   process.stderr.write(`🧠 [MIND] Historical episodes bootstrapped\n`);
                 }
-              } catch (e: any) {
+              } catch (e: unknown) {
                 if (debug) {
                   process.stderr.write(
-                    `⚠️ [MIND] Bootstrap historical episodes failed: ${e.message}\n`,
+                    `⚠️ [MIND] Bootstrap historical episodes failed: ${describeUnknownError(e)}\n`,
                   );
                 }
               }
 
               // 2. Global narrative sync (sync old sessions to STORY.md)
               try {
-                const { resolveSessionTranscriptsDir } = await import(
-                  "../../config/sessions/paths.js"
-                );
+                const { resolveSessionTranscriptsDir } =
+                  await import("../../config/sessions/paths.js");
                 const sessionsDir = resolveSessionTranscriptsDir();
                 const safeTokenLimit = Math.floor((ctxInfo.tokens || 50000) * 0.5);
 
                 // Resolve narrative model from config or fallback to chat model
                 const narrativeProvider =
-                  (mindConfig?.config as any)?.narrative?.provider || params.provider;
-                const narrativeModel =
-                  (mindConfig?.config as any)?.narrative?.model || params.model;
+                  mindConfig?.config?.narrative?.provider || params.provider;
+                const narrativeModel = mindConfig?.config?.narrative?.model || params.model;
 
                 let narrativeLLM = model;
 
                 // If a different model is configured for narratives, resolve it
-                if (
-                  narrativeProvider !== params.provider ||
-                  narrativeModel !== params.model
-                ) {
+                if (narrativeProvider !== params.provider || narrativeModel !== params.model) {
                   if (debug) {
                     process.stderr.write(
                       `🎨 [MIND] Narrative uses custom model: ${narrativeProvider}/${narrativeModel} (chat: ${params.provider}/${params.model})\n`,
@@ -600,7 +650,8 @@ export async function runEmbeddedPiAgent(
                   authStorage,
                   modelRegistry,
                   debug,
-                  autoBootstrapHistory: (mindConfig?.config as any)?.narrative?.autoBootstrapHistory ?? false,
+                  autoBootstrapHistory:
+                    mindConfig?.config?.narrative?.autoBootstrapHistory ?? false,
                 });
 
                 await cons.syncGlobalNarrative(
@@ -619,9 +670,11 @@ export async function runEmbeddedPiAgent(
                     `📖 [MIND] Story reloaded after sync (${narrativeStory.length} chars)\n`,
                   );
                 }
-              } catch (e: any) {
+              } catch (e: unknown) {
                 if (debug) {
-                  process.stderr.write(`⚠️ [MIND] Global narrative sync failed: ${e.message}\n`);
+                  process.stderr.write(
+                    `⚠️ [MIND] Global narrative sync failed: ${describeUnknownError(e)}\n`,
+                  );
                 }
               }
 
@@ -633,9 +686,11 @@ export async function runEmbeddedPiAgent(
                     `📝 [MIND] Episode stored for Global ID: ${globalSessionId}\n`,
                   );
                 }
-              } catch (e: any) {
+              } catch (e: unknown) {
                 if (debug) {
-                  process.stderr.write(`⚠️ [MIND] Failed to store episode: ${e.message}\n`);
+                  process.stderr.write(
+                    `⚠️ [MIND] Failed to store episode: ${describeUnknownError(e)}\n`,
+                  );
                 }
               }
 
@@ -648,29 +703,40 @@ export async function runEmbeddedPiAgent(
 
                   if (flashbacks && flashbacks.length > 0) {
                     const flashbacksText = flashbacks
-                      .map(
-                        (fb: any, idx: number) =>
-                          `[Flashback ${idx + 1}] ${fb.content || fb.text || ""}`,
-                      )
+                      .map((fb: unknown, idx: number) => {
+                        const record =
+                          fb && typeof fb === "object"
+                            ? (fb as { content?: unknown; text?: unknown })
+                            : undefined;
+                        const text =
+                          typeof record?.content === "string"
+                            ? record.content
+                            : typeof record?.text === "string"
+                              ? record.text
+                              : "";
+                        return `[Flashback ${idx + 1}] ${text}`;
+                      })
                       .join("\n\n");
 
                     mindExtraSystemPrompt = `\n\n# Resonant Memories\n\nThese are relevant memories from your past that resonate with the current conversation:\n\n${flashbacksText}\n\nUse these memories to inform your response, but don't explicitly mention them unless directly relevant.`;
 
                     if (debug) {
-                      process.stderr.write(
-                        `✨ [MIND] ${flashbacks.length} flashbacks retrieved\n`,
-                      );
+                      process.stderr.write(`✨ [MIND] ${flashbacks.length} flashbacks retrieved\n`);
                     }
                   } else if (debug) {
                     process.stderr.write(`🔍 [MIND] No relevant flashbacks found\n`);
                   }
-                } catch (e: any) {
+                } catch (e: unknown) {
                   if (debug) {
-                    process.stderr.write(`⚠️ [MIND] Flashback retrieval failed: ${e.message}\n`);
+                    process.stderr.write(
+                      `⚠️ [MIND] Flashback retrieval failed: ${describeUnknownError(e)}\n`,
+                    );
                   }
                 }
               } else if (debug) {
-                process.stderr.write(`⏭️  [MIND] Flashback retrieval skipped (MIND_SKIP_RESONANCE=1)\n`);
+                process.stderr.write(
+                  `⏭️  [MIND] Flashback retrieval skipped (MIND_SKIP_RESONANCE=1)\n`,
+                );
               }
             } else if (debug) {
               process.stderr.write(
@@ -701,41 +767,52 @@ export async function runEmbeddedPiAgent(
                     !evt.data.willRetry
                   ) {
                     // Fire-and-forget: narrate compacted-away messages to STORY.md
-                    (async () => {
+                    void (async () => {
                       try {
                         const path = await import("node:path");
-                        const { SessionManager } = await import(
-                          "@mariozechner/pi-coding-agent"
-                        );
-                        const { isSubagentSessionKey } = await import(
-                          "../../routing/session-key.js"
-                        );
+                        const { SessionManager } = await import("@mariozechner/pi-coding-agent");
+                        const { isSubagentSessionKey } =
+                          await import("../../routing/session-key.js");
 
-                        const isSubagent = isSubagentSessionKey(params.sessionKey!);
-                        if (isSubagent) return;
+                        const isSubagent = isSubagentSessionKey(params.sessionKey);
+                        if (isSubagent) {
+                          return;
+                        }
 
                         const sm = SessionManager.open(params.sessionFile);
 
                         // Full history from the .jsonl (all entries, including compacted ones)
                         const allMessages = sm
                           .getBranch()
-                          .filter((e: any) => e.type === "message")
-                          .filter((e: any) => e.message?.role !== "system")
-                          .map((e: any) => ({
-                            role: e.message?.role,
-                            text: e.message?.text || e.message?.content,
-                            timestamp: e.timestamp,
+                          .filter(isMessageBranchEntry)
+                          .filter((entry) => entry.message?.role !== "system")
+                          .map((entry) => ({
+                            role:
+                              typeof entry.message?.role === "string"
+                                ? entry.message.role
+                                : undefined,
+                            text: messageTextFromUnknown(
+                              entry.message?.text ?? entry.message?.content,
+                            ),
+                            timestamp: entry.timestamp,
                           }));
 
                         // Messages currently in LLM context (post-compaction)
-                        const contextMessages = sm.buildSessionContext().messages || [];
+                        const contextMessages =
+                          (sm.buildSessionContext().messages as
+                            | SessionContextMessage[]
+                            | undefined) || [];
                         const contextTimestamps = new Set(
-                          contextMessages.map((m: any) => m.timestamp),
+                          contextMessages
+                            .map((message) => message.timestamp)
+                            .filter((timestamp) => timestamp !== undefined),
                         );
 
                         // Messages that got compacted away = in full history but NOT in current context
                         const compactedMessages = allMessages.filter(
-                          (m: any) => m.timestamp && !contextTimestamps.has(m.timestamp),
+                          (message) =>
+                            message.timestamp !== undefined &&
+                            !contextTimestamps.has(message.timestamp),
                         );
 
                         if (compactedMessages.length === 0) {
@@ -753,16 +830,13 @@ export async function runEmbeddedPiAgent(
                           );
                         }
 
-                        const { ConsolidationService } = await import(
-                          "../../services/memory/ConsolidationService.js"
-                        );
-                        const { GraphService } = await import(
-                          "../../services/memory/GraphService.js"
-                        );
+                        const { ConsolidationService } =
+                          await import("../../services/memory/ConsolidationService.js");
+                        const { GraphService } =
+                          await import("../../services/memory/GraphService.js");
                         const gUrl =
-                          (mindConfig?.config as any)?.graphiti?.baseUrl ||
-                          "http://localhost:8001";
-                        const debug = !!(mindConfig?.config as any)?.debug;
+                          mindConfig?.config?.graphiti?.baseUrl || "http://localhost:8001";
+                        const debug = !!mindConfig?.config?.debug;
                         const gs = new GraphService(gUrl, debug);
                         const cons = new ConsolidationService(gs, debug);
 
@@ -771,9 +845,8 @@ export async function runEmbeddedPiAgent(
 
                         // Resolve narrative model from config or fallback to chat model
                         const narrativeProvider =
-                          (mindConfig?.config as any)?.narrative?.provider || params.provider;
-                        const narrativeModel =
-                          (mindConfig?.config as any)?.narrative?.model || params.model;
+                          mindConfig?.config?.narrative?.provider || params.provider;
+                        const narrativeModel = mindConfig?.config?.narrative?.model || params.model;
 
                         let narrativeLLM = model;
 
@@ -817,15 +890,32 @@ export async function runEmbeddedPiAgent(
                           authStorage,
                           modelRegistry,
                           debug,
-                          autoBootstrapHistory: (mindConfig?.config as any)?.narrative?.autoBootstrapHistory ?? false,
+                          autoBootstrapHistory:
+                            mindConfig?.config?.narrative?.autoBootstrapHistory ?? false,
                         });
 
-                        await cons.syncStoryWithSession(
-                          compactedMessages,
-                          storyPath,
-                          subconsciousAgent,
-                          undefined,
-                          safeTokenLimit,
+                        const { retryAsync } = await import("../../infra/retry.js");
+                        await retryAsync(
+                          () =>
+                            cons.syncStoryWithSession(
+                              compactedMessages,
+                              storyPath,
+                              subconsciousAgent,
+                              undefined,
+                              safeTokenLimit,
+                            ),
+                          {
+                            attempts: 3,
+                            minDelayMs: 2000,
+                            maxDelayMs: 30_000,
+                            jitter: 0.3,
+                            label: "post-compaction-story-sync",
+                            onRetry: ({ attempt, maxAttempts, delayMs, err }) => {
+                              process.stderr.write(
+                                `⚠️ [MIND] Post-compaction story sync retry ${attempt}/${maxAttempts}: ${(err as Error).message}. Next in ${delayMs}ms...\n`,
+                              );
+                            },
+                          },
                         );
 
                         if (process.stderr.isTTY) {
@@ -833,9 +923,9 @@ export async function runEmbeddedPiAgent(
                             `✅ [MIND] Post-compaction STORY.md sync complete.\n`,
                           );
                         }
-                      } catch (e: any) {
+                      } catch (e: unknown) {
                         process.stderr.write(
-                          `❌ [MIND] Post-compaction story sync failed: ${e.message}\n`,
+                          `❌ [MIND] Post-compaction story sync failed: ${describeUnknownError(e)}\n`,
                         );
                       }
                     })();

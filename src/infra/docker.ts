@@ -104,7 +104,7 @@ export async function ensureDockerDaemon(
       currentRetries--;
       if (currentRetries === 0) {
         onLog(
-          `❌ [DOCKER] Daemon not reachable after ${retries * (intervalMs / 1000)}s: ${e.message}`,
+          `❌ [DOCKER] Daemon not reachable after ${retries * (intervalMs / 1000)}s: ${e instanceof Error ? e.message : String(e)}`,
         );
         return false;
       }

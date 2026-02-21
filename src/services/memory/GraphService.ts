@@ -18,6 +18,7 @@ export interface MemoryResult {
   _sourceQuery?: string;
   _boosted?: boolean;
   uuid?: string;
+  fact?: string;
   message?: {
     uuid?: string;
     content?: string;
@@ -90,8 +91,14 @@ export class GraphService {
   }
 
   /**
-   * Enqueues a task for background processing.
+   * Enqueues a task for serial background processing.
    * Returns immediately, allowing the main thread to continue.
+   *
+   * Safety: The `isProcessing` guard works because Node.js is single-threaded.
+   * Between the `push()` and the `void processQueue()`, no I/O tick can
+   * interleave. `processQueue` drains all items before setting the flag
+   * back to false, so new items enqueued during processing are picked up
+   * by the existing drain loop's `while` condition.
    */
   private static enqueue(name: string, task: () => Promise<void>) {
     GraphService.taskQueue.push({ name, execute: task });
@@ -179,7 +186,9 @@ export class GraphService {
 
       // Persist to global cache so other GraphService instances can reuse it
       try {
-        fs.writeFileSync(MCP_SESSION_CACHE_FILE, sessionId, "utf-8");
+        const tmpCachePath = `${MCP_SESSION_CACHE_FILE}.${process.pid}.tmp`;
+        fs.writeFileSync(tmpCachePath, sessionId, "utf-8");
+        fs.renameSync(tmpCachePath, MCP_SESSION_CACHE_FILE);
       } catch {
         // Non-fatal: just log
         this.log(`⚠️ [GRAPH] Failed to cache MCP Session ID`);
@@ -326,6 +335,31 @@ export class GraphService {
         );
       }
     });
+  }
+
+  /**
+   * Adds an Episode and returns a Promise that resolves when the MCP call completes.
+   * Unlike addEpisode(), failures are propagated to the caller.
+   */
+  async addEpisodeAsync(
+    sessionId: string,
+    text: string,
+    timestamp?: string,
+    options?: { source?: string },
+  ): Promise<void> {
+    const source = options?.source || "message";
+    await this.callMcpTool(
+      "add_memory",
+      {
+        name: "Conversation Episode",
+        episode_body: text,
+        source: source,
+        group_id: sessionId,
+        created_at: timestamp,
+      },
+      10000,
+    );
+    this.log(`📼 [GRAPH] Episode stored in Graphiti (${text.length} chars)`);
   }
 
   /**

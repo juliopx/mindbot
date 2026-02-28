@@ -461,6 +461,22 @@ ${newStory}
     agent: { complete: (prompt: string) => Promise<{ text?: string | null }> },
   ): Promise<void> {
     try {
+      // Skip regeneration if QUICK.md is already newer than STORY.md
+      const [storyMtime, quickMtime] = await Promise.all([
+        fs
+          .stat(storyPath)
+          .then((s) => s.mtimeMs)
+          .catch(() => 0),
+        fs
+          .stat(quickPath)
+          .then((s) => s.mtimeMs)
+          .catch(() => 0),
+      ]);
+      if (quickMtime > 0 && quickMtime >= storyMtime) {
+        this.log(`⚡ [MIND] QUICK.md is up to date, skipping regeneration`);
+        return;
+      }
+
       const [soul, user, story] = await Promise.all([
         fs.readFile(path.join(workspaceDir, "SOUL.md"), "utf-8").catch(() => ""),
         fs.readFile(path.join(workspaceDir, "USER.md"), "utf-8").catch(() => ""),

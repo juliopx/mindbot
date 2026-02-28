@@ -19,6 +19,7 @@ export interface SubconsciousAgentOptions {
   modelRegistry: ModelRegistry;
   debug?: boolean;
   autoBootstrapHistory?: boolean;
+  fallbacks?: string[];
 }
 
 interface StreamResult {
@@ -43,6 +44,8 @@ type StreamChunk = {
 async function consumeStream(s: AsyncIterable<unknown>, debug: boolean): Promise<StreamResult> {
   let collected = "";
   let streamError: string | undefined;
+  const startTime = Date.now();
+  let ttft: number | undefined;
 
   for await (const chunk of s) {
     const ch = chunk as StreamChunk;
@@ -79,6 +82,10 @@ async function consumeStream(s: AsyncIterable<unknown>, debug: boolean): Promise
     }
 
     if (text) {
+      if (ttft === undefined) {
+        ttft = Date.now() - startTime;
+        process.stderr.write(`  ⏱️ [MIND] TTFT: ${ttft}ms\n`);
+      }
       collected += text;
     } else if (!ch.content && !ch.text && ch.type !== "start" && ch.type !== "done" && debug) {
       if (collected.length === 0) {
@@ -122,8 +129,6 @@ export function createSubconsciousAgent(opts: SubconsciousAgentOptions): Subcons
           );
         }
 
-        const isCopilotProvider = /github-copilot/.test(model.provider || "");
-
         let stream = streamSimple(
           model,
           {
@@ -131,46 +136,82 @@ export function createSubconsciousAgent(opts: SubconsciousAgentOptions): Subcons
           } as Context,
           {
             apiKey: key,
-            temperature: 0,
-            onPayload: debug
-              ? (payload: unknown) => {
-                  const p = payload as Record<string, unknown>;
+            maxTokens: 16000,
+            onPayload: (payload: unknown) => {
+              if (payload && typeof payload === "object") {
+                const p = payload as Record<string, unknown>;
+                // Only inject thinking-disable fields for local models (DrQwen, etc.)
+                // GitHub Copilot and other cloud providers reject unknown fields
+                if (model.provider === "drqwen" || model.provider === "copilot-proxy") {
+                  p.enable_thinking = false;
+                  p.chat_template_kwargs = { enable_thinking: false };
+                }
+                if (debug) {
                   process.stderr.write(
-                    `  🧩 [DEBUG] Subconscious payload: model=${String(p["model"])} api=${model.api} baseUrl=${model.baseUrl} keys=${Object.keys(p || {}).join(",")}\n`,
+                    `  🧩 [DEBUG] Subconscious payload: model=${String(p["model"])} api=${model.api} baseUrl=${model.baseUrl} keys=${Object.keys(p).join(",")}\n`,
                   );
                 }
-              : undefined,
+              }
+            },
           },
         );
 
         let result = await consumeStream(stream, debug);
 
-        // Failover: if the primary model returned a stream error via Copilot, retry with gpt-4o
-        if (result.streamError && isCopilotProvider && result.text.length === 0) {
+        // Failover: if the primary model returned a stream error with no output, retry with configured fallbacks
+        if (result.streamError && result.text.length === 0) {
           process.stderr.write(
-            `  ⚠️ [MIND] Model ${model.id} failed via Copilot (${result.streamError}). Failing over to gpt-4o...\n`,
+            `  ⚠️ [MIND] Model ${model.provider}/${model.id} failed with stream error (${result.streamError}). Failing over...\n`,
           );
 
-          const failoverModel =
-            (modelRegistry.find("github-copilot", "gpt-4o") as Model<Api> | null) ??
-            ({
-              ...model,
-              id: "gpt-4o",
-              api: "openai-completions",
-            } as Model<Api>);
+          let failoverModel: Model<Api> | null = null;
 
-          process.stderr.write(
-            `  🔄 [MIND] Failover → ${failoverModel.id} (api: ${failoverModel.api})\n`,
-          );
+          if (opts.fallbacks && opts.fallbacks.length > 0) {
+            for (const fallback of opts.fallbacks) {
+              const [fProvider, fModel] = fallback.includes("/")
+                ? fallback.split("/")
+                : [model.provider, fallback];
+              failoverModel = modelRegistry.find(fProvider, fModel) as Model<Api> | null;
+              if (failoverModel) {
+                break;
+              }
+            }
+          }
 
-          stream = streamSimple(
-            failoverModel,
-            {
-              messages: [{ role: "user", content: prompt }],
-            } as Context,
-            { apiKey: key, temperature: 0.3 },
-          );
-          result = await consumeStream(stream, debug);
+          if (failoverModel) {
+            process.stderr.write(
+              `  🔄 [MIND] Failover → ${failoverModel.provider}/${failoverModel.id}\n`,
+            );
+
+            const failoverKey = (await authStorage.getApiKey(failoverModel.provider)) as string;
+            stream = streamSimple(
+              failoverModel,
+              {
+                messages: [{ role: "user", content: prompt }],
+              } as Context,
+              {
+                apiKey: failoverKey,
+                maxTokens: 16000,
+                onPayload: (payload: unknown) => {
+                  if (payload && typeof payload === "object") {
+                    const p = payload as Record<string, unknown>;
+                    if (
+                      failoverModel.provider === "drqwen" ||
+                      failoverModel.provider === "copilot-proxy"
+                    ) {
+                      p.enable_thinking = false;
+                      p.chat_template_kwargs = { enable_thinking: false };
+                    }
+                  }
+                },
+              },
+            );
+            result = await consumeStream(stream, debug);
+          } else {
+            process.stderr.write(
+              `  ❌ [MIND] No valid fallback models configured. Failing completely.\n`,
+            );
+          }
         }
 
         fullText = result.text;

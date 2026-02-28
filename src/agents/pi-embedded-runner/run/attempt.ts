@@ -708,6 +708,48 @@ export async function runEmbeddedAttempt(
         );
       }
 
+      // [MIND] Ephemerally inject resonance/flashback into the last user message
+      // of each API call. Using messages (not systemPrompt) preserves the static
+      // system prompt cache. The resonance is never written to the session file,
+      // so it cannot contaminate STORY.md narrative or confuse session history.
+      if (params.mindResonance) {
+        const inner = activeSession.agent.streamFn;
+        const resonance = params.mindResonance;
+        activeSession.agent.streamFn = (model, context, options) => {
+          const ctx = context as unknown as { messages?: unknown[] };
+          const messages = ctx?.messages;
+          if (!Array.isArray(messages) || messages.length === 0) {
+            return inner(model, context, options);
+          }
+          // Prepend resonance to the last user message (LLM-format copy — not stored)
+          const newMessages = [...messages];
+          for (let i = newMessages.length - 1; i >= 0; i--) {
+            const msg = newMessages[i] as { role?: string; content?: unknown };
+            if (msg?.role !== "user") {
+              continue;
+            }
+            const resonanceBlock = { type: "text", text: `${resonance}\n\n` };
+            const content = msg.content;
+            const newContent = Array.isArray(content)
+              ? [resonanceBlock, ...content]
+              : [
+                  resonanceBlock,
+                  {
+                    type: "text",
+                    text: typeof content === "string" ? content : JSON.stringify(content),
+                  },
+                ];
+            newMessages[i] = { ...msg, content: newContent } as unknown;
+            break;
+          }
+          const nextContext = {
+            ...(context as unknown as Record<string, unknown>),
+            messages: newMessages,
+          } as unknown;
+          return inner(model, nextContext as typeof context, options);
+        };
+      }
+
       try {
         const prior = await sanitizeSessionHistory({
           messages: activeSession.messages,

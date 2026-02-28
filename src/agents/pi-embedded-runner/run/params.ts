@@ -106,4 +106,10 @@ export type RunEmbeddedPiAgentParams = {
   narrativeStory?: string;
   /** Callback when history messages are truncated (for mind-memory narrativization). */
   onHistoryTruncated?: (dropped: unknown[]) => Promise<void>;
+  /**
+   * Ephemeral resonance/flashback context from mind-memory.
+   * Injected into the system parameter of each API call at the streamFn level
+   * so it is never stored in the session file (no contamination of STORY.md).
+   */
+  mindResonance?: string;
 };

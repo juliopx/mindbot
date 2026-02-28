@@ -861,11 +861,8 @@ export async function runEmbeddedPiAgent(
 
           const basePrompt =
             provider === "anthropic" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt;
-          const combinedExtraSystemPrompt = [params.extraSystemPrompt, mindExtraSystemPrompt]
-            .filter(Boolean)
-            .join("\n\n");
-          const prompt = combinedExtraSystemPrompt
-            ? `${combinedExtraSystemPrompt}\n\n${basePrompt}`
+          const prompt = params.extraSystemPrompt
+            ? `${params.extraSystemPrompt}\n\n${basePrompt}`
             : basePrompt;
 
           // [MIND] Wrap onAgentEvent to sync STORY.md after auto-compaction
@@ -1137,6 +1134,7 @@ export async function runEmbeddedPiAgent(
             ownerNumbers: params.ownerNumbers,
             enforceFinalTag: params.enforceFinalTag,
             narrativeStory,
+            mindResonance: mindExtraSystemPrompt || undefined,
           });
 
           const {

@@ -147,33 +147,6 @@ export function createSubconsciousAgent(opts: SubconsciousAgentOptions): Subcons
             apiKey: key,
             maxTokens: 16000,
             ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
-            onPayload: (payload: unknown) => {
-              if (payload && typeof payload === "object") {
-                const p = payload as Record<string, unknown>;
-                if (opts.disableThinking) {
-                  // Anthropic: explicit thinking disable
-                  if (model.api === "anthropic" || model.api === "anthropic-vertex") {
-                    p.thinking = { type: "disabled" };
-                  }
-                  // Local models (DrQwen, etc.)
-                  if (model.provider === "drqwen" || model.provider === "copilot-proxy") {
-                    p.enable_thinking = false;
-                    p.chat_template_kwargs = { enable_thinking: false };
-                  }
-                } else {
-                  // Legacy: only disable for local models when not explicitly requested
-                  if (model.provider === "drqwen" || model.provider === "copilot-proxy") {
-                    p.enable_thinking = false;
-                    p.chat_template_kwargs = { enable_thinking: false };
-                  }
-                }
-                if (debug) {
-                  process.stderr.write(
-                    `  🧩 [DEBUG] Subconscious payload: model=${String(p["model"])} api=${model.api} baseUrl=${model.baseUrl} keys=${Object.keys(p).join(",")}\n`,
-                  );
-                }
-              }
-            },
           },
         );
 
@@ -205,6 +178,7 @@ export function createSubconsciousAgent(opts: SubconsciousAgentOptions): Subcons
             );
 
             const failoverKey = (await authStorage.getApiKey(failoverModel.provider)) as string;
+
             stream = streamSimple(
               failoverModel,
               {
@@ -214,34 +188,6 @@ export function createSubconsciousAgent(opts: SubconsciousAgentOptions): Subcons
                 apiKey: failoverKey,
                 maxTokens: 16000,
                 ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
-                onPayload: (payload: unknown) => {
-                  if (payload && typeof payload === "object") {
-                    const p = payload as Record<string, unknown>;
-                    if (opts.disableThinking) {
-                      if (
-                        failoverModel.api === "anthropic" ||
-                        failoverModel.api === "anthropic-vertex"
-                      ) {
-                        p.thinking = { type: "disabled" };
-                      }
-                      if (
-                        failoverModel.provider === "drqwen" ||
-                        failoverModel.provider === "copilot-proxy"
-                      ) {
-                        p.enable_thinking = false;
-                        p.chat_template_kwargs = { enable_thinking: false };
-                      }
-                    } else {
-                      if (
-                        failoverModel.provider === "drqwen" ||
-                        failoverModel.provider === "copilot-proxy"
-                      ) {
-                        p.enable_thinking = false;
-                        p.chat_template_kwargs = { enable_thinking: false };
-                      }
-                    }
-                  }
-                },
               },
             );
             result = await consumeStream(stream, debug);

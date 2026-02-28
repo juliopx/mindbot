@@ -1,0 +1,45 @@
+diff --git a/dist/providers/openai-completions.js b/dist/providers/openai-completions.js
+--- a/dist/providers/openai-completions.js
++++ b/dist/providers/openai-completions.js
+@@ -355,7 +355,13 @@ function buildParams(model, context, options) {
+     else if (options?.reasoningEffort && model.reasoning && compat.supportsReasoningEffort) {
+         // OpenAI-style reasoning_effort
+         params.reasoning_effort = options.reasoningEffort;
+     }
++    else if (model.reasoning && !options?.reasoningEffort && !compat.supportsReasoningEffort) {
++        // Generic disable for reasoning-capable models that default thinking on
++        // and don't support reasoning_effort (e.g. Gemini via GitHub Copilot).
++        // Use thinking_budget: 0 to explicitly disable.
++        params.thinking = { thinking_budget: 0 };
++    }
+     // OpenRouter provider routing preferences
+     if (model.baseUrl.includes("openrouter.ai") && model.compat?.openRouterRouting) {
+         params.provider = model.compat.openRouterRouting;
+diff --git a/dist/providers/anthropic.js b/dist/providers/anthropic.js
+index 0bf2b894799bbc9ef5fda07bc44ea4301c9f395a..d4aca7858338dbdb3ad5e3f2af8ca50e49d19518 100644
+--- a/dist/providers/anthropic.js
++++ b/dist/providers/anthropic.js
+@@ -491,6 +491,11 @@ function buildParams(model, context, isOAuthToken, options) {
+             };
+         }
+     }
++    else if (model.reasoning) {
++        // Model supports thinking but it was not requested — explicitly disable it
++        // so the API does not enable thinking by default for capable models.
++        params.thinking = { type: "disabled" };
++    }
+     if (options?.metadata) {
+         const userId = options.metadata.user_id;
+         if (typeof userId === "string") {
+diff --git a/dist/providers/simple-options.js b/dist/providers/simple-options.js
+index de04c6dfddebfde53103faec85b41025318c56d1..a5755e56971cc5684456bcc9df0db8cd6b550ac3 100644
+--- a/dist/providers/simple-options.js
++++ b/dist/providers/simple-options.js
+@@ -10,6 +10,7 @@ export function buildBaseOptions(model, options, apiKey) {
+         onPayload: options?.onPayload,
+         maxRetryDelayMs: options?.maxRetryDelayMs,
+         metadata: options?.metadata,
++        interleavedThinking: options?.interleavedThinking,
+     };
+ }
+ export function clampReasoning(effort) {

@@ -725,8 +725,7 @@ export async function runEmbeddedPiAgent(
                 }
               }
 
-              // Observer agent: same model as flashbackAgent but with thinking always off.
-              // Query generation is a pattern-matching task — thinking only adds latency.
+              // Observer agent: query generation — uses the same model as flashback.
               const observerAgent = createSubconsciousAgent({
                 model: flashbackModel,
                 authStorage,
@@ -735,7 +734,6 @@ export async function runEmbeddedPiAgent(
                 autoBootstrapHistory: false,
                 fallbacks: params.config?.agents?.defaults?.model?.fallbacks,
                 reasoning: undefined,
-                disableThinking: true,
               });
 
               // Prepare bootstrap data (sync read before parallel block)

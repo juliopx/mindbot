@@ -86,28 +86,25 @@ export class SubconsciousService {
             .join("\n")
         : "(No previous context)";
 
-    const userContextBlock = quickContext?.trim()
-      ? `USER PROFILE (use only to resolve who people are — do NOT generate queries about this):\n${quickContext.trim()}`
-      : "";
-
     const prompt = `You are the "Subconscious Observer" of an artificial mind.
 Your task: generate 3 search queries to retrieve relevant past memories from a knowledge graph.
 
-${userContextBlock ? `${userContextBlock}\n\n` : ""}CONVERSATION:
+CONVERSATION:
 ${historyText}
 
 LATEST MESSAGE: "${cleanedPrompt}"
 
 TASK:
-Read the full conversation. Generate 3 search queries that capture the most relevant people, events, and facts — prioritizing what is happening in the recent/latest exchange, but understood in the context of the full conversation thread.
+Read the full conversation above. Generate 3 search queries grounded in what is actually being discussed — prioritizing the most recent exchanges, understood in the context of the full thread.
 
 RULES:
-1. CONCRETE — queries must name specific people, places, events or facts from the conversation. Never generate abstract queries about "the user", "general topics" or "previous interactions".
-2. ENTITY RESOLUTION — always replace pronouns with their actual referent from context (e.g. "he", "she", "it" → the actual name or entity).
-3. FILLER MESSAGES — if the latest message is a short reaction or filler (e.g. "ok", "haha", "yes", "I see"…), base the queries on the substance of the recent exchanges instead.
-4. LANGUAGE — respond in the same language as the conversation.
-5. NO METADATA — ignore timestamps, user IDs, system labels.
-
+1. CONVERSATION-GROUNDED — every query must be directly traceable to something said in the conversation above. Do not invent topics that are not mentioned.
+2. CONCRETE — name specific people, places, events or facts. Never generate abstract queries like "user interests", "general topics" or "previous interactions".
+3. ENTITY RESOLUTION — replace pronouns with their actual referent from context (e.g. "he", "she" → the actual name).
+4. FILLER MESSAGES — if the latest message is a short reaction or filler (e.g. "ok", "haha", "yes", "I see"…), base the queries on the substance of the recent exchanges instead.
+5. LANGUAGE — respond in the same language as the conversation.
+6. NO METADATA — ignore timestamps, user IDs, system labels.
+${quickContext?.trim() ? `\nBACKGROUND (use only to resolve names and entities in the conversation above — do NOT generate queries from this):\n${quickContext.trim()}` : ""}
 Respond with exactly 3 queries, one per line. No numbers, bullets, or explanations.`;
 
     this.log(`  👁️ [OBSERVER] Performing entity resolution and generating search queries...`);

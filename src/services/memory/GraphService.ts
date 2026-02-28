@@ -416,7 +416,7 @@ export class GraphService {
                 allMatches.push({
                   content: n.summary || n.name || "Unknown memory",
                   timestamp: (n.created_at || c.created_at) as string,
-                  _sourceQuery: `Graph Nodes (${query.substring(0, 30)}...)`,
+                  _sourceQuery: `Graph Nodes (${query})`,
                   _boosted: true,
                 });
               }
@@ -429,14 +429,14 @@ export class GraphService {
               (c.name as string) ||
               (typeof c === "string" ? c : JSON.stringify(c)),
             timestamp: c.created_at as string,
-            _sourceQuery: `Graph Nodes (${query.substring(0, 30)}...)`,
+            _sourceQuery: `Graph Nodes (${query})`,
             _boosted: true,
           });
         } catch {
           allMatches.push({
             content: typeof c === "string" ? c : JSON.stringify(c),
             timestamp: c.created_at as string,
-            _sourceQuery: `Graph Nodes (${query.substring(0, 30)}...)`,
+            _sourceQuery: `Graph Nodes (${query})`,
             _boosted: true,
           });
         }
@@ -501,7 +501,7 @@ export class GraphService {
                     `${f.source_name || ""} ${f.fact || ""} ${f.target_name || ""}`.trim() ||
                     "Unknown fact",
                   timestamp: String(f.created_at || c.created_at),
-                  _sourceQuery: `Graph Facts (${query.substring(0, 30)}...)`,
+                  _sourceQuery: `Graph Facts (${query})`,
                   _boosted: true,
                 });
               }
@@ -514,14 +514,14 @@ export class GraphService {
               (c.fact as string) ||
               (typeof c === "string" ? c : JSON.stringify(c)),
             timestamp: String(c.created_at),
-            _sourceQuery: `Graph Facts (${query.substring(0, 30)}...)`,
+            _sourceQuery: `Graph Facts (${query})`,
             _boosted: true,
           });
         } catch {
           allMatches.push({
             content: typeof c === "string" ? c : JSON.stringify(c),
             timestamp: String(c.created_at),
-            _sourceQuery: `Graph Facts (${query.substring(0, 30)}...)`,
+            _sourceQuery: `Graph Facts (${query})`,
             _boosted: true,
           });
         }

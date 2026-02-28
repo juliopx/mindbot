@@ -245,6 +245,8 @@ Respond with exactly 3 queries, one per line. No numbers, bullets, or explanatio
     soulContext?: string,
     storyContext?: string,
     rewriteMemories: boolean = true,
+    /** Dedicated agent for observer query generation — should have no thinking for low latency. Falls back to agent. */
+    observerAgent?: LLMClient | null,
   ): Promise<string> {
     this.log("🧠 [MIND] Subconscious is exploring memories...");
     const startTime = performance.now();
@@ -253,7 +255,7 @@ Respond with exactly 3 queries, one per line. No numbers, bullets, or explanatio
     const searchQueries = await this.generateSeekerQueries(
       currentPrompt,
       recentMessages,
-      agent ?? undefined,
+      observerAgent ?? agent ?? undefined,
       storyContext,
     );
     const t_queries = performance.now() - t0;

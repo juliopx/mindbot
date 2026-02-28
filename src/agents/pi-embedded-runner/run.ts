@@ -625,222 +625,235 @@ export async function runEmbeddedPiAgent(
               const { SubconsciousService } =
                 await import("../../services/memory/SubconsciousService.js");
               const { SessionManager } = await import("@mariozechner/pi-coding-agent");
+              const { resolveSessionTranscriptsDir } =
+                await import("../../config/sessions/paths.js");
+              const { createSubconsciousAgent } = await import("./subconscious-agent.js");
 
               const gUrl = mindConfig?.config?.graphiti?.baseUrl || "http://localhost:8001";
               const gs = new GraphService(gUrl, debug);
               const cons = new ConsolidationService(gs, debug);
+              const subsvc = new SubconsciousService(gs, debug);
               const globalSessionId = "global-user-memory";
+              const sessionsDir = resolveSessionTranscriptsDir();
+              const safeTokenLimit = Math.floor((ctxInfo.tokens || 50000) * 0.5);
 
-              // 1. Bootstrap historical episodes from legacy memory files
-              try {
-                const sessionMgr = SessionManager.open(params.sessionFile);
-                const sessionMessages = sessionMgr.buildSessionContext().messages || [];
-                await cons.bootstrapHistoricalEpisodes(globalSessionId, memoryDir, sessionMessages);
-                if (debug) {
-                  process.stderr.write(`🧠 [MIND] Historical episodes bootstrapped\n`);
-                }
-              } catch (e: unknown) {
-                if (debug) {
-                  process.stderr.write(
-                    `⚠️ [MIND] Bootstrap historical episodes failed: ${describeUnknownError(e)}\n`,
-                  );
-                }
-              }
-
-              // SubconsciousAgent shared between narrative sync and flashback retrieval
-              let subconsciousAgent: {
-                complete: (prompt: string) => Promise<{ text: string }>;
-              } | null = null;
-
-              // Resolve narrative model from config or fallback to chat model (hoisted for use in flashback)
+              // Resolve narrative model (needed before parallel block)
               const narrativeModelStr = mindConfig?.config?.narrative?.model;
               const [narrativeProvider, narrativeModel] = narrativeModelStr?.includes("/")
                 ? narrativeModelStr.split("/")
                 : [params.provider, narrativeModelStr ?? params.model];
 
-              // 2. Global narrative sync (sync old sessions to STORY.md)
-              try {
-                const { resolveSessionTranscriptsDir } =
-                  await import("../../config/sessions/paths.js");
-                const sessionsDir = resolveSessionTranscriptsDir();
-                const safeTokenLimit = Math.floor((ctxInfo.tokens || 50000) * 0.5);
+              let narrativeLLM = model;
+              if (narrativeProvider !== params.provider || narrativeModel !== params.model) {
+                if (debug) {
+                  process.stderr.write(
+                    `🎨 [MIND] Narrative uses custom model: ${narrativeProvider}/${narrativeModel} (chat: ${params.provider}/${params.model})\n`,
+                  );
+                }
+                const resolved = resolveModel(
+                  narrativeProvider || params.provider || "",
+                  narrativeModel || params.model || "",
+                  params.agentDir ?? resolveOpenClawAgentDir(),
+                  params.config,
+                );
+                if (resolved.model) {
+                  narrativeLLM = resolved.model;
+                } else if (debug) {
+                  process.stderr.write(
+                    `⚠️ [MIND] Could not resolve narrative model: ${resolved.error}. Using chat model.\n`,
+                  );
+                }
+              } else if (debug) {
+                process.stderr.write(
+                  `🤖 [MIND] Using chat model for narrative: ${params.provider}/${params.model}\n`,
+                );
+              }
 
-                let narrativeLLM = model;
+              const subconsciousAgent = createSubconsciousAgent({
+                model: narrativeLLM,
+                authStorage,
+                modelRegistry,
+                debug,
+                autoBootstrapHistory: mindConfig?.config?.narrative?.autoBootstrapHistory ?? false,
+                fallbacks: params.config?.agents?.defaults?.model?.fallbacks,
+                reasoning: (mindConfig?.config?.narrative?.thinking ??
+                  "low") as import("@mariozechner/pi-ai").ThinkingLevel,
+              });
 
-                // If a different model is configured for narratives, resolve it
-                if (narrativeProvider !== params.provider || narrativeModel !== params.model) {
+              // Resolve flashback agent (may differ from narrative agent)
+              const skipResonance = process.env.MIND_SKIP_RESONANCE === "1";
+              let flashbackModel = narrativeLLM;
+              let flashbackAgent: { complete: (prompt: string) => Promise<{ text: string }> } =
+                subconsciousAgent;
+              const graphitiModelStr = mindConfig?.config?.graphiti?.model;
+              if (
+                !skipResonance &&
+                graphitiModelStr &&
+                graphitiModelStr !== `${narrativeProvider}/${narrativeModel}`
+              ) {
+                const [gProvider, gModel] = graphitiModelStr.includes("/")
+                  ? graphitiModelStr.split("/")
+                  : [narrativeProvider ?? "", graphitiModelStr];
+                const resolvedGraphiti = resolveModel(
+                  gProvider ?? "",
+                  gModel ?? "",
+                  params.agentDir ?? resolveOpenClawAgentDir(),
+                  params.config,
+                );
+                if (resolvedGraphiti.model) {
+                  flashbackModel = resolvedGraphiti.model;
+                  flashbackAgent = createSubconsciousAgent({
+                    model: flashbackModel,
+                    authStorage,
+                    modelRegistry,
+                    debug,
+                    autoBootstrapHistory: false,
+                    fallbacks: params.config?.agents?.defaults?.model?.fallbacks,
+                    reasoning: mindConfig?.config?.graphiti?.thinking as
+                      | import("@mariozechner/pi-ai").ThinkingLevel
+                      | undefined,
+                  });
                   if (debug) {
                     process.stderr.write(
-                      `🎨 [MIND] Narrative uses custom model: ${narrativeProvider}/${narrativeModel} (chat: ${params.provider}/${params.model})\n`,
-                    );
-                  }
-
-                  const { resolveModel } = await import("./model.js");
-                  const resolved = resolveModel(
-                    narrativeProvider || params.provider || "",
-                    narrativeModel || params.model || "",
-                    params.agentDir ?? resolveOpenClawAgentDir(),
-                    params.config,
-                  );
-
-                  if (resolved.model) {
-                    narrativeLLM = resolved.model;
-                  } else if (debug) {
-                    process.stderr.write(
-                      `⚠️ [MIND] Could not resolve narrative model: ${resolved.error}. Using chat model.\n`,
+                      `🔍 [MIND] Flashback uses graphiti model: ${gProvider}/${gModel}\n`,
                     );
                   }
                 } else if (debug) {
                   process.stderr.write(
-                    `🤖 [MIND] Using chat model for narrative: ${params.provider}/${params.model}\n`,
-                  );
-                }
-
-                // Create subconscious agent using the factory
-                const { createSubconsciousAgent } = await import("./subconscious-agent.js");
-                subconsciousAgent = createSubconsciousAgent({
-                  model: narrativeLLM,
-                  authStorage,
-                  modelRegistry,
-                  debug,
-                  autoBootstrapHistory:
-                    mindConfig?.config?.narrative?.autoBootstrapHistory ?? false,
-                  fallbacks: params.config?.agents?.defaults?.model?.fallbacks,
-                  reasoning: (mindConfig?.config?.narrative?.thinking ??
-                    "low") as import("@mariozechner/pi-ai").ThinkingLevel,
-                });
-
-                await cons.syncGlobalNarrative(
-                  sessionsDir,
-                  storyPath,
-                  subconsciousAgent,
-                  undefined,
-                  safeTokenLimit,
-                  params.sessionFile, // exclude current session
-                );
-
-                // Reload story after sync
-                narrativeStory = await fs.readFile(storyPath, "utf-8").catch(() => undefined);
-                if (debug && narrativeStory) {
-                  process.stderr.write(
-                    `📖 [MIND] Story reloaded after sync (${narrativeStory.length} chars)\n`,
-                  );
-                }
-
-                // Fire-and-forget: regenerate QUICK.md from updated story
-                void cons
-                  .generateQuickProfile(storyPath, quickPath, resolvedWorkspace, subconsciousAgent)
-                  .catch((e: unknown) => {
-                    if (debug) {
-                      process.stderr.write(
-                        `⚠️ [MIND] QUICK.md regen after global sync failed: ${describeUnknownError(e)}\n`,
-                      );
-                    }
-                  });
-              } catch (e: unknown) {
-                if (debug) {
-                  process.stderr.write(
-                    `⚠️ [MIND] Global narrative sync failed: ${describeUnknownError(e)}\n`,
+                    `⚠️ [MIND] Could not resolve graphiti model ${graphitiModelStr}, using narrative model.\n`,
                   );
                 }
               }
 
-              // 3. Store user message in Graphiti
-              try {
-                await gs.addEpisode(globalSessionId, `human: ${params.prompt}`);
-                if (debug) {
-                  process.stderr.write(
-                    `📝 [MIND] Episode stored for Global ID: ${globalSessionId}\n`,
-                  );
-                }
-              } catch (e: unknown) {
-                if (debug) {
-                  process.stderr.write(
-                    `⚠️ [MIND] Failed to store episode: ${describeUnknownError(e)}\n`,
-                  );
-                }
-              }
+              // Observer agent: same model as flashbackAgent but with thinking always off.
+              // Query generation is a pattern-matching task — thinking only adds latency.
+              const observerAgent = createSubconsciousAgent({
+                model: flashbackModel,
+                authStorage,
+                modelRegistry,
+                debug,
+                autoBootstrapHistory: false,
+                fallbacks: params.config?.agents?.defaults?.model?.fallbacks,
+                reasoning: undefined,
+              });
 
-              // 4. Get flashbacks (semantic memory retrieval)
-              const skipResonance = process.env.MIND_SKIP_RESONANCE === "1";
-              if (!skipResonance) {
-                try {
-                  const subsvc = new SubconsciousService(gs, debug);
+              // Prepare bootstrap data (sync read before parallel block)
+              const sessionMgr = SessionManager.open(params.sessionFile);
+              const sessionMessages = sessionMgr.buildSessionContext().messages || [];
 
-                  // Resolve a separate agent for entity resolution if graphiti.model is configured
-                  let flashbackAgent = subconsciousAgent;
-                  const graphitiModelStr = mindConfig?.config?.graphiti?.model;
-                  if (
-                    graphitiModelStr &&
-                    graphitiModelStr !== `${narrativeProvider}/${narrativeModel}`
-                  ) {
-                    const [gProvider, gModel] = graphitiModelStr.includes("/")
-                      ? graphitiModelStr.split("/")
-                      : [narrativeProvider ?? "", graphitiModelStr];
-                    const resolvedGraphiti = resolveModel(
-                      gProvider ?? "",
-                      gModel ?? "",
-                      params.agentDir ?? resolveOpenClawAgentDir(),
-                      params.config,
+              // Run all 4 pipeline steps in parallel — none depend on each other's output
+              const rewriteMemories = mindConfig?.config?.graphiti?.rewriteMemories ?? true;
+              const mindPipelineStart = Date.now();
+
+              const [bootstrapResult, syncResult, episodeResult, flashbackResult] =
+                await Promise.allSettled([
+                  // 1. Bootstrap historical episodes from legacy memory files
+                  cons.bootstrapHistoricalEpisodes(globalSessionId, memoryDir, sessionMessages),
+
+                  // 2. Global narrative sync → reload story → fire-and-forget QUICK.md
+                  (async () => {
+                    await cons.syncGlobalNarrative(
+                      sessionsDir,
+                      storyPath,
+                      subconsciousAgent,
+                      undefined,
+                      safeTokenLimit,
+                      params.sessionFile,
                     );
-                    if (resolvedGraphiti.model) {
-                      const { createSubconsciousAgent } = await import("./subconscious-agent.js");
-                      flashbackAgent = createSubconsciousAgent({
-                        model: resolvedGraphiti.model,
-                        authStorage,
-                        modelRegistry,
-                        debug,
-                        autoBootstrapHistory: false,
-                        fallbacks: params.config?.agents?.defaults?.model?.fallbacks,
-                        reasoning: mindConfig?.config?.graphiti?.thinking as
-                          | import("@mariozechner/pi-ai").ThinkingLevel
-                          | undefined,
+                    narrativeStory = await fs.readFile(storyPath, "utf-8").catch(() => undefined);
+                    if (debug && narrativeStory) {
+                      process.stderr.write(
+                        `📖 [MIND] Story reloaded after sync (${narrativeStory.length} chars)\n`,
+                      );
+                    }
+                    void cons
+                      .generateQuickProfile(
+                        storyPath,
+                        quickPath,
+                        resolvedWorkspace,
+                        subconsciousAgent,
+                      )
+                      .catch((e: unknown) => {
+                        if (debug) {
+                          process.stderr.write(
+                            `⚠️ [MIND] QUICK.md regen after global sync failed: ${describeUnknownError(e)}\n`,
+                          );
+                        }
                       });
-                      if (debug) {
-                        process.stderr.write(
-                          `🔍 [MIND] Flashback uses graphiti model: ${gProvider}/${gModel}\n`,
-                        );
-                      }
-                    } else if (debug) {
-                      process.stderr.write(
-                        `⚠️ [MIND] Could not resolve graphiti model ${graphitiModelStr}, using narrative model.\n`,
-                      );
-                    }
-                  }
+                  })(),
 
-                  const rewriteMemories = mindConfig?.config?.graphiti?.rewriteMemories ?? true;
-                  const flashbackText = await subsvc.getFlashback(
-                    globalSessionId,
-                    params.prompt,
-                    flashbackAgent,
-                    undefined,
-                    [],
-                    undefined,
-                    quickContext,
-                    rewriteMemories,
+                  // 3. Store user message in Graphiti
+                  gs.addEpisode(globalSessionId, `human: ${params.prompt}`),
+
+                  // 4. Get flashbacks (semantic memory retrieval)
+                  skipResonance
+                    ? Promise.resolve("")
+                    : subsvc.getFlashback(
+                        globalSessionId,
+                        params.prompt,
+                        flashbackAgent,
+                        undefined,
+                        [],
+                        undefined,
+                        quickContext,
+                        rewriteMemories,
+                        observerAgent,
+                      ),
+                ]);
+
+              const mindPipelineMs = Date.now() - mindPipelineStart;
+
+              // Log individual task errors
+              if (bootstrapResult.status === "rejected" && debug) {
+                process.stderr.write(
+                  `⚠️ [MIND] Bootstrap historical episodes failed: ${describeUnknownError(bootstrapResult.reason)}\n`,
+                );
+              }
+              if (syncResult.status === "rejected" && debug) {
+                process.stderr.write(
+                  `⚠️ [MIND] Global narrative sync failed: ${describeUnknownError(syncResult.reason)}\n`,
+                );
+              }
+              if (episodeResult.status === "rejected" && debug) {
+                process.stderr.write(
+                  `⚠️ [MIND] Failed to store episode: ${describeUnknownError(episodeResult.reason)}\n`,
+                );
+              } else if (episodeResult.status === "fulfilled" && debug) {
+                process.stderr.write(
+                  `📝 [MIND] Episode stored for Global ID: ${globalSessionId}\n`,
+                );
+              }
+
+              // Extract flashback result
+              if (skipResonance) {
+                if (debug) {
+                  process.stderr.write(
+                    `⏭️  [MIND] Flashback retrieval skipped (MIND_SKIP_RESONANCE=1)\n`,
                   );
-
-                  if (flashbackText) {
-                    mindExtraSystemPrompt = `\n\n${flashbackText}\n\nUse these impressions to inform your response if they resonate, but don't explicitly mention them unless directly relevant.`;
-
-                    if (debug) {
-                      process.stderr.write(
-                        `🌠 [MIND] Resonance injected (${flashbackText.length} chars)\n`,
-                      );
-                    }
-                  } else if (debug) {
-                    process.stderr.write(`🔍 [MIND] No relevant flashbacks found\n`);
-                  }
-                } catch (e: unknown) {
+                }
+              } else if (flashbackResult.status === "rejected") {
+                if (debug) {
+                  process.stderr.write(
+                    `⚠️ [MIND] Flashback retrieval failed: ${describeUnknownError(flashbackResult.reason)}\n`,
+                  );
+                }
+              } else {
+                const flashbackText = flashbackResult.value;
+                if (flashbackText) {
+                  mindExtraSystemPrompt = `\n\n${flashbackText}\n\nUse these impressions to inform your response if they resonate, but don't explicitly mention them unless directly relevant.`;
                   if (debug) {
                     process.stderr.write(
-                      `⚠️ [MIND] Flashback retrieval failed: ${describeUnknownError(e)}\n`,
+                      `🌠 [MIND] Resonance injected (${flashbackText.length} chars)\n`,
                     );
                   }
+                } else if (debug) {
+                  process.stderr.write(`🔍 [MIND] No relevant flashbacks found\n`);
                 }
-              } else if (debug) {
+              }
+
+              if (debug) {
                 process.stderr.write(
-                  `⏭️  [MIND] Flashback retrieval skipped (MIND_SKIP_RESONANCE=1)\n`,
+                  `⏱️  [LATENCY] Mind pipeline (parallel): ${mindPipelineMs}ms\n`,
                 );
               }
             } else if (debug) {

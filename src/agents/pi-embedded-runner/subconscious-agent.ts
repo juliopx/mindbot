@@ -27,6 +27,8 @@ export interface SubconsciousAgentOptions {
   autoBootstrapHistory?: boolean;
   fallbacks?: string[];
   reasoning?: ThinkingLevel;
+  /** Explicitly disable thinking in the API payload. Use for latency-sensitive tasks like query generation. */
+  disableThinking?: boolean;
 }
 
 interface StreamResult {
@@ -148,11 +150,22 @@ export function createSubconsciousAgent(opts: SubconsciousAgentOptions): Subcons
             onPayload: (payload: unknown) => {
               if (payload && typeof payload === "object") {
                 const p = payload as Record<string, unknown>;
-                // Only inject thinking-disable fields for local models (DrQwen, etc.)
-                // GitHub Copilot and other cloud providers reject unknown fields
-                if (model.provider === "drqwen" || model.provider === "copilot-proxy") {
-                  p.enable_thinking = false;
-                  p.chat_template_kwargs = { enable_thinking: false };
+                if (opts.disableThinking) {
+                  // Anthropic: explicit thinking disable
+                  if (model.api === "anthropic" || model.api === "anthropic-vertex") {
+                    p.thinking = { type: "disabled" };
+                  }
+                  // Local models (DrQwen, etc.)
+                  if (model.provider === "drqwen" || model.provider === "copilot-proxy") {
+                    p.enable_thinking = false;
+                    p.chat_template_kwargs = { enable_thinking: false };
+                  }
+                } else {
+                  // Legacy: only disable for local models when not explicitly requested
+                  if (model.provider === "drqwen" || model.provider === "copilot-proxy") {
+                    p.enable_thinking = false;
+                    p.chat_template_kwargs = { enable_thinking: false };
+                  }
                 }
                 if (debug) {
                   process.stderr.write(
@@ -204,12 +217,28 @@ export function createSubconsciousAgent(opts: SubconsciousAgentOptions): Subcons
                 onPayload: (payload: unknown) => {
                   if (payload && typeof payload === "object") {
                     const p = payload as Record<string, unknown>;
-                    if (
-                      failoverModel.provider === "drqwen" ||
-                      failoverModel.provider === "copilot-proxy"
-                    ) {
-                      p.enable_thinking = false;
-                      p.chat_template_kwargs = { enable_thinking: false };
+                    if (opts.disableThinking) {
+                      if (
+                        failoverModel.api === "anthropic" ||
+                        failoverModel.api === "anthropic-vertex"
+                      ) {
+                        p.thinking = { type: "disabled" };
+                      }
+                      if (
+                        failoverModel.provider === "drqwen" ||
+                        failoverModel.provider === "copilot-proxy"
+                      ) {
+                        p.enable_thinking = false;
+                        p.chat_template_kwargs = { enable_thinking: false };
+                      }
+                    } else {
+                      if (
+                        failoverModel.provider === "drqwen" ||
+                        failoverModel.provider === "copilot-proxy"
+                      ) {
+                        p.enable_thinking = false;
+                        p.chat_template_kwargs = { enable_thinking: false };
+                      }
                     }
                   }
                 },

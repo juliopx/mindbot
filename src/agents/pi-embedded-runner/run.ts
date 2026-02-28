@@ -735,6 +735,7 @@ export async function runEmbeddedPiAgent(
                 autoBootstrapHistory: false,
                 fallbacks: params.config?.agents?.defaults?.model?.fallbacks,
                 reasoning: undefined,
+                disableThinking: true,
               });
 
               // Prepare bootstrap data (sync read before parallel block)

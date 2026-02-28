@@ -15,10 +15,16 @@ import { ensureGraphitiDocker, installDocker } from "./docker.js";
 type MindMemoryPluginConfig = {
   debug?: boolean;
   memoryDir?: string;
-  graphiti?: { baseUrl?: string; autoStart?: boolean };
+  graphiti?: {
+    enabled?: boolean;
+    autoStart?: boolean;
+    baseUrl?: string;
+    rewriteMemories?: boolean;
+    model?: string;
+  };
   narrative?: {
     enabled?: boolean;
-    autoBootstrapHistory?: boolean;
+    autoBootstrapStory?: boolean;
     provider?: string;
     model?: string;
   };
@@ -43,6 +49,8 @@ export default function register(api: PluginApi) {
   const graphService = new GraphService(graphitiUrl, debug);
   const subconscious = new SubconsciousService(graphService, debug);
   const consolidator = new ConsolidationService(graphService, debug);
+
+  api.logger.info(`[mind-memory] Initializing with debug=${debug}`);
 
   // 1. Register Background Service for Docker management
   api.registerService({
@@ -158,9 +166,48 @@ export default function register(api: PluginApi) {
       oldestContextTimestamp?: string;
       llmClient: unknown;
     };
+
     // Use stable global ID to ensure memory persists across chat sessions
     const sessionId = "global-user-memory";
     try {
+      // Resolve overrides
+      const subconsciousOverride = config.graphiti?.model || config.narrative?.model;
+      let activeClient = llmClient as LLMClient | null;
+
+      if (subconsciousOverride) {
+        try {
+          const agentDir = resolveOpenClawAgentDir();
+          const [provider, modelName] = subconsciousOverride.includes("/")
+            ? subconsciousOverride.split("/")
+            : ["github-copilot", subconsciousOverride];
+
+          const { model, authStorage, modelRegistry } = resolveModel(
+            provider,
+            modelName,
+            agentDir,
+            api.config,
+          );
+
+          if (model) {
+            if (debug) {
+              api.logger.info(`🧠 [MIND] Using subconscious override: ${provider}/${modelName}`);
+            }
+            const { createSubconsciousAgent } =
+              await import("../../agents/pi-embedded-runner/subconscious-agent.js");
+            activeClient = createSubconsciousAgent({
+              model,
+              authStorage,
+              modelRegistry,
+              debug,
+              autoBootstrapHistory: false,
+              fallbacks: api.config.agents?.defaults?.model?.fallbacks,
+            });
+          }
+        } catch (err) {
+          api.logger.warn(`[mind-memory] Failed to resolve subconscious override: ${String(err)}`);
+        }
+      }
+
       // Bootstrap historical episodes BEFORE flashback retrieval (if graph is empty)
       const agentId = resolveDefaultAgentId(api.config);
       const workspaceDir = resolveAgentWorkspaceDir(api.config, agentId);
@@ -170,8 +217,12 @@ export default function register(api: PluginApi) {
       const flashbacks = await subconscious.getFlashback(
         sessionId,
         prompt,
-        llmClient as LLMClient | null,
+        activeClient,
         oldestContextTimestamp ? new Date(oldestContextTimestamp) : undefined,
+        [],
+        undefined,
+        undefined,
+        config.graphiti?.rewriteMemories ?? true,
       );
       respond(true, { flashbacks });
     } catch (e: unknown) {
@@ -299,10 +350,12 @@ export default function register(api: PluginApi) {
         const debug = !!config.debug;
 
         // Resolve narrative model from config or fallback to main agent model
-        const narrativeProvider =
-          (config.narrative as { provider?: string } | undefined)?.provider ?? "github-copilot";
-        const narrativeModel =
-          (config.narrative as { model?: string } | undefined)?.model ?? "gemini-2.0-flash-001";
+        const consolidatorOverride = config.narrative?.model;
+        const [narrativeProvider, narrativeModel] = consolidatorOverride
+          ? consolidatorOverride.includes("/")
+            ? consolidatorOverride.split("/")
+            : ["github-copilot", consolidatorOverride]
+          : ["github-copilot", "gemini-2.0-flash-001"];
 
         const { model, authStorage, modelRegistry, error } = resolveModel(
           narrativeProvider,
@@ -316,6 +369,12 @@ export default function register(api: PluginApi) {
             `[mind-memory] before_reset: could not resolve narrative model: ${error ?? "unknown"}`,
           );
           return;
+        }
+
+        if (debug) {
+          api.logger.info(
+            `🧠 [MIND] Story consolidation will use model: ${narrativeProvider}/${narrativeModel}`,
+          );
         }
 
         // Create a subconscious agent for the narrative LLM call

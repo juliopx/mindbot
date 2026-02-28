@@ -64,7 +64,7 @@ type ApiKeyInfo = ResolvedProviderAuth;
 
 type MindMemoryPluginConfig = {
   debug?: boolean;
-  graphiti?: { baseUrl?: string };
+  graphiti?: { baseUrl?: string; model?: string; rewriteMemories?: boolean };
   narrative?: {
     enabled?: boolean;
     provider?: string;
@@ -601,53 +601,6 @@ export async function runEmbeddedPiAgent(
               const cons = new ConsolidationService(gs, debug);
               const globalSessionId = "global-user-memory";
 
-              // Resolve narrative model from config or fallback to chat model
-              const narrativeProvider = mindConfig?.config?.narrative?.provider || params.provider;
-              const narrativeModel = mindConfig?.config?.narrative?.model || params.model;
-
-              let narrativeLLM = model;
-
-              // If a different model is configured for narratives, resolve it
-              if (narrativeProvider !== params.provider || narrativeModel !== params.model) {
-                if (debug) {
-                  process.stderr.write(
-                    `🎨 [MIND] Narrative uses custom model: ${narrativeProvider}/${narrativeModel} (chat: ${params.provider}/${params.model})\n`,
-                  );
-                }
-
-                const { resolveModel } = await import("./model.js");
-                const narrativeProviderParam = narrativeProvider || params.provider || "";
-                const narrativeModelParam = narrativeModel || params.model || "";
-                const resolved = resolveModel(
-                  narrativeProviderParam,
-                  narrativeModelParam,
-                  params.agentDir ?? resolveOpenClawAgentDir(),
-                  params.config,
-                );
-
-                if (resolved.model) {
-                  narrativeLLM = resolved.model;
-                } else if (debug) {
-                  process.stderr.write(
-                    `⚠️ [MIND] Could not resolve narrative model: ${resolved.error}. Using chat model.\n`,
-                  );
-                }
-              } else if (debug) {
-                process.stderr.write(
-                  `🤖 [MIND] Using chat model for narrative: ${params.provider}/${params.model}\n`,
-                );
-              }
-
-              // Create subconscious agent using the factory
-              const { createSubconsciousAgent } = await import("./subconscious-agent.js");
-              const subconsciousAgent = createSubconsciousAgent({
-                model: narrativeLLM,
-                authStorage,
-                modelRegistry,
-                debug,
-                autoBootstrapHistory: mindConfig?.config?.narrative?.autoBootstrapHistory ?? false,
-              });
-
               // 1. Bootstrap historical episodes from legacy memory files
               try {
                 const sessionMgr = SessionManager.open(params.sessionFile);
@@ -664,6 +617,15 @@ export async function runEmbeddedPiAgent(
                 }
               }
 
+              // SubconsciousAgent shared between narrative sync and flashback retrieval
+              let subconsciousAgent: {
+                complete: (prompt: string) => Promise<{ text: string }>;
+              } | null = null;
+
+              // Resolve narrative model from config or fallback to chat model (hoisted for use in flashback)
+              const narrativeProvider = mindConfig?.config?.narrative?.provider || params.provider;
+              const narrativeModel = mindConfig?.config?.narrative?.model || params.model;
+
               // 2. Global narrative sync (sync old sessions to STORY.md)
               try {
                 const { resolveSessionTranscriptsDir } =
@@ -671,10 +633,50 @@ export async function runEmbeddedPiAgent(
                 const sessionsDir = resolveSessionTranscriptsDir();
                 const safeTokenLimit = Math.floor((ctxInfo.tokens || 50000) * 0.5);
 
-                // Notify user if verbose mode is on
-                if (params.verboseLevel) {
-                  await params.onBlockReply?.({ text: "🧠 _Updating memory narrative…_" });
+                let narrativeLLM = model;
+
+                // If a different model is configured for narratives, resolve it
+                if (narrativeProvider !== params.provider || narrativeModel !== params.model) {
+                  if (debug) {
+                    process.stderr.write(
+                      `🎨 [MIND] Narrative uses custom model: ${narrativeProvider}/${narrativeModel} (chat: ${params.provider}/${params.model})\n`,
+                    );
+                  }
+
+                  const { resolveModel } = await import("./model.js");
+                  const narrativeProviderParam = narrativeProvider || params.provider || "";
+                  const narrativeModelParam = narrativeModel || params.model || "";
+                  const resolved = resolveModel(
+                    narrativeProviderParam,
+                    narrativeModelParam,
+                    params.agentDir ?? resolveOpenClawAgentDir(),
+                    params.config,
+                  );
+
+                  if (resolved.model) {
+                    narrativeLLM = resolved.model;
+                  } else if (debug) {
+                    process.stderr.write(
+                      `⚠️ [MIND] Could not resolve narrative model: ${resolved.error}. Using chat model.\n`,
+                    );
+                  }
+                } else if (debug) {
+                  process.stderr.write(
+                    `🤖 [MIND] Using chat model for narrative: ${params.provider}/${params.model}\n`,
+                  );
                 }
+
+                // Create subconscious agent using the factory
+                const { createSubconsciousAgent } = await import("./subconscious-agent.js");
+                subconsciousAgent = createSubconsciousAgent({
+                  model: narrativeLLM,
+                  authStorage,
+                  modelRegistry,
+                  debug,
+                  autoBootstrapHistory:
+                    mindConfig?.config?.narrative?.autoBootstrapHistory ?? false,
+                  fallbacks: params.config?.agents?.defaults?.model?.fallbacks,
+                });
 
                 await cons.syncGlobalNarrative(
                   sessionsDir,
@@ -721,16 +723,55 @@ export async function runEmbeddedPiAgent(
               if (!skipResonance) {
                 try {
                   const subsvc = new SubconsciousService(gs, debug);
-                  const soulPath = path.join(resolvedWorkspace, "SOUL.md");
-                  const soulContext = await fs.readFile(soulPath, "utf-8").catch(() => undefined);
+
+                  // Resolve a separate agent for entity resolution if graphiti.model is configured
+                  let flashbackAgent = subconsciousAgent;
+                  const graphitiModelStr = mindConfig?.config?.graphiti?.model;
+                  if (
+                    graphitiModelStr &&
+                    graphitiModelStr !== `${narrativeProvider}/${narrativeModel}`
+                  ) {
+                    const [gProvider, gModel] = graphitiModelStr.includes("/")
+                      ? graphitiModelStr.split("/")
+                      : [narrativeProvider ?? "", graphitiModelStr];
+                    const resolvedGraphiti = resolveModel(
+                      gProvider ?? "",
+                      gModel ?? "",
+                      params.agentDir ?? resolveOpenClawAgentDir(),
+                      params.config,
+                    );
+                    if (resolvedGraphiti.model) {
+                      const { createSubconsciousAgent } = await import("./subconscious-agent.js");
+                      flashbackAgent = createSubconsciousAgent({
+                        model: resolvedGraphiti.model,
+                        authStorage,
+                        modelRegistry,
+                        debug,
+                        autoBootstrapHistory: false,
+                        fallbacks: params.config?.agents?.defaults?.model?.fallbacks,
+                      });
+                      if (debug) {
+                        process.stderr.write(
+                          `🔍 [MIND] Flashback uses graphiti model: ${gProvider}/${gModel}\n`,
+                        );
+                      }
+                    } else if (debug) {
+                      process.stderr.write(
+                        `⚠️ [MIND] Could not resolve graphiti model ${graphitiModelStr}, using narrative model.\n`,
+                      );
+                    }
+                  }
+
+                  const rewriteMemories = mindConfig?.config?.graphiti?.rewriteMemories ?? true;
                   const flashbackText = await subsvc.getFlashback(
                     globalSessionId,
                     params.prompt,
-                    subconsciousAgent,
+                    flashbackAgent,
                     undefined,
                     [],
-                    soulContext,
-                    narrativeStory,
+                    undefined,
+                    undefined,
+                    rewriteMemories,
                   );
 
                   if (flashbackText) {
@@ -772,8 +813,14 @@ export async function runEmbeddedPiAgent(
           attemptedThinking.add(thinkLevel);
           await fs.mkdir(resolvedWorkspace, { recursive: true });
 
-          const prompt =
+          const basePrompt =
             provider === "anthropic" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt;
+          const combinedExtraSystemPrompt = [params.extraSystemPrompt, mindExtraSystemPrompt]
+            .filter(Boolean)
+            .join("\n\n");
+          const prompt = combinedExtraSystemPrompt
+            ? `${combinedExtraSystemPrompt}\n\n${basePrompt}`
+            : basePrompt;
 
           // [MIND] Wrap onAgentEvent to sync STORY.md after auto-compaction
           const wrappedOnAgentEvent =
@@ -921,14 +968,6 @@ export async function runEmbeddedPiAgent(
                         });
 
                         const { retryAsync } = await import("../../infra/retry.js");
-
-                        // Notify user if verbose mode is on
-                        if (params.verboseLevel) {
-                          await params.onBlockReply?.({
-                            text: `🧠 _Updating memory narrative (${compactedMessages.length} messages)…_`,
-                          });
-                        }
-
                         await retryAsync(
                           () =>
                             cons.syncStoryWithSession(
@@ -1021,9 +1060,7 @@ export async function runEmbeddedPiAgent(
             onReasoningEnd: params.onReasoningEnd,
             onToolResult: params.onToolResult,
             onAgentEvent: wrappedOnAgentEvent,
-            extraSystemPrompt: [params.extraSystemPrompt, mindExtraSystemPrompt]
-              .filter(Boolean)
-              .join("\n\n"),
+            extraSystemPrompt: undefined,
             inputProvenance: params.inputProvenance,
             streamParams: params.streamParams,
             ownerDisplay: params.config?.commands?.ownerDisplay ?? "raw",

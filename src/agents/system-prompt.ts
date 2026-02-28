@@ -363,7 +363,6 @@ export function buildAgentSystemPrompt(params: {
   const readToolName = resolveToolName("read");
   const execToolName = resolveToolName("exec");
   const processToolName = resolveToolName("process");
-  const extraSystemPrompt = params.extraSystemPrompt?.trim();
   const ownerDisplay = params.ownerDisplay === "hash" ? "hash" : "raw";
   const ownerLine = buildOwnerIdentityLine(
     params.ownerNumbers ?? [],
@@ -586,12 +585,6 @@ export function buildAgentSystemPrompt(params: {
     ...buildVoiceSection({ isMinimal, ttsHint: params.ttsHint }),
   ];
 
-  if (extraSystemPrompt) {
-    // Use "Subagent Context" header for minimal mode (subagents), otherwise "Group Chat Context"
-    const contextHeader =
-      promptMode === "minimal" ? "## Subagent Context" : "## Group Chat Context";
-    lines.push(contextHeader, extraSystemPrompt, "");
-  }
   if (params.reactionGuidance) {
     const { level, channel } = params.reactionGuidance;
     const guidanceText =

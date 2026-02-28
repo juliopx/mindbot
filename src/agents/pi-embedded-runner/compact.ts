@@ -25,7 +25,7 @@ import { resolveUserPath } from "../../utils.js";
 import { normalizeMessageChannel } from "../../utils/message-channel.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
 import { resolveOpenClawAgentDir } from "../agent-paths.js";
-import { resolveSessionAgentIds } from "../agent-scope.js";
+import { resolveAgentNarrativeDir, resolveSessionAgentIds } from "../agent-scope.js";
 import type { ExecElevatedDefaults } from "../bash-tools.js";
 import { makeBootstrapWarn, resolveBootstrapContextForRun } from "../bootstrap-files.js";
 import { listChannelSupportedActions, resolveChannelMessageToolHints } from "../channel-tools.js";
@@ -694,7 +694,10 @@ export async function compactEmbeddedPiSessionDirect(
             const gUrl = mindConfig?.config?.graphiti?.baseUrl || "http://localhost:8001";
             const gs = new GraphService(gUrl, mindDebug);
             const cons = new ConsolidationService(gs, mindDebug);
-            const storyPath = path.join(effectiveWorkspace, "STORY.md");
+            const narrativeDir = resolveAgentNarrativeDir(params.config ?? {}, sessionAgentId);
+            await fs.mkdir(narrativeDir, { recursive: true });
+            const storyPath = path.join(narrativeDir, "STORY.md");
+            const quickPath = path.join(narrativeDir, "QUICK.md");
 
             const { resolveContextWindowInfo } = await import("../context-window-guard.js");
             const ctxInfo = resolveContextWindowInfo({
@@ -737,6 +740,17 @@ export async function compactEmbeddedPiSessionDirect(
             if (mindDebug) {
               process.stderr.write(`📖 [MIND] Story sync completed\n`);
             }
+
+            // Fire-and-forget: regenerate QUICK.md from updated story
+            void cons
+              .generateQuickProfile(storyPath, quickPath, effectiveWorkspace, subconsciousAgent)
+              .catch((e: unknown) => {
+                if (mindDebug) {
+                  process.stderr.write(
+                    `⚠️ [MIND] QUICK.md regen after compaction failed: ${e instanceof Error ? e.message : String(e)}\n`,
+                  );
+                }
+              });
           } catch (e: unknown) {
             const message = e instanceof Error ? e.message : String(e);
             process.stderr.write(

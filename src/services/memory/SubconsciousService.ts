@@ -54,6 +54,7 @@ export class SubconsciousService {
     currentPrompt: string,
     recentMessages: RecentMessage[],
     agent?: LLMClient,
+    quickContext?: string,
   ): Promise<string[]> {
     // Strip "Conversation info (untrusted metadata)" JSON blocks if present
     const cleanedPrompt = currentPrompt
@@ -85,28 +86,38 @@ export class SubconsciousService {
             .join("\n")
         : "(No previous context)";
 
-    const prompt = `You are the "Subconscious Observer". 
-Analyze the CURRENT USER INPUT and use the recent HISTORY for ENTITY RESOLUTION.
+    const userContextBlock = quickContext?.trim()
+      ? `USER CONTEXT (ultra-compact profile):\n${quickContext.trim()}\n\n`
+      : "";
+
+    const prompt = `You are the "Subconscious Observer" of an artificial mind.
+Your task is to generate search queries to retrieve relevant past memories from a knowledge graph.
+
+${userContextBlock}
 
 OBJECTIVE:
-Generate 2-3 distinct search queries to find related memories in a knowledge graph.
+Generate exactly 3 search queries covering the main topics of the RECENT CONVERSATION.
+
+QUERY BUDGET:
+- Query 1-2: Focus on the LATEST MESSAGE — its main topics, people, events or facts.
+- Query 3: Focus on a DIFFERENT significant topic from the RECENT HISTORY (if distinct from the latest message). If the whole conversation is about the same topic, use a broader angle instead.
 
 STRICT GUIDELINES:
-1. SEARCH INTENT: Your goal is to find PAST INFORMATION related to the CURRENT TOPICS.
-2. ENTITY RESOLUTION: You MUST replace pronouns (she, he, it, her, su, su familia) with the actual names or entities mentioned in the HISTORY. 
-   - Context: If the user says "family" and the history is about "Alice", search for "family of alice".
-3. NO META-CONVERSATION: Do NOT generate queries about the conversation state (e.g., "agreement", "confirmation", "user question", "greeting"). Focus ONLY on substantive content (people, events, facts).
-4. DIVERSITY: Generate queries that cover different possible ways the information might be stored (e.g., one specific, one broader).
+1. ENTITY RESOLUTION: Replace pronouns (she, he, it, su, su familia, etc.) with actual names/entities from context.
+   - Example: "her family" + history mentions "Alice" → search "Alice family".
+2. NO META-CONVERSATION: Skip queries about conversation state (greetings, confirmations, agreements). Substantive content only (people, events, facts, places).
+3. DIVERSITY: No two queries should be near-identical. Cover different facets.
+4. LANGUAGE: Use the same language as the conversation.
 
-IMPORTANT: IGNORE all messaging protocol metadata (e.g., "[Telegram ...]", [TIMESTAMP], user IDs).
+IGNORE messaging protocol metadata (e.g., "[Telegram ...]", [TIMESTAMP], user IDs).
 
-CURRENT USER INPUT:
+LATEST MESSAGE:
 "${cleanedPrompt}"
 
-HISTORY (for context):
+RECENT HISTORY:
 ${historyText}
 
-Respond with 2-3 queries, one per line. 
+Respond with exactly 3 queries, one per line.
 DO NOT include numbers, bullets, headers or explanations.`;
 
     this.log(`  👁️ [OBSERVER] Performing entity resolution and generating search queries...`);
@@ -123,14 +134,14 @@ DO NOT include numbers, bullets, headers or explanations.`;
         .filter((l) => l.length > 3);
 
       const queries: string[] = [];
-      const seenWords = new Set<string>();
+      const seenQueries = new Set<string>();
 
       for (const line of lines) {
         if (queries.length >= 3) {
           break;
         }
 
-        let clean = line
+        const clean = line
           .replace(/^[-*•\d.]+\s*/, "")
           .replace(/["']/g, "")
           .trim();
@@ -138,23 +149,15 @@ DO NOT include numbers, bullets, headers or explanations.`;
           continue;
         }
 
-        const tokens = clean.split(/\s+/);
-        const uniqueTokens = tokens.filter((t) => {
-          const lct = t.toLowerCase();
-          if (seenWords.has(lct)) {
-            return false;
-          }
-          seenWords.add(lct);
-          return true;
-        });
-
-        if (uniqueTokens.length > 1) {
-          queries.push(uniqueTokens.join(" "));
+        const normalized = clean.toLowerCase();
+        if (!seenQueries.has(normalized)) {
+          seenQueries.add(normalized);
+          queries.push(clean);
         }
       }
 
       if (queries.length === 0) {
-        queries.push(cleanedPrompt.substring(0, 50));
+        queries.push(cleanedPrompt.substring(0, 150));
       }
 
       return queries;
@@ -264,6 +267,7 @@ DO NOT include numbers, bullets, headers or explanations.`;
       currentPrompt,
       recentMessages,
       agent ?? undefined,
+      storyContext,
     );
     const t_queries = performance.now() - t0;
 

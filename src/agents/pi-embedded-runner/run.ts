@@ -5,6 +5,7 @@ import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { isMarkdownCapableMessageChannel } from "../../utils/message-channel.js";
 import { resolveOpenClawAgentDir } from "../agent-paths.js";
+import { resolveAgentNarrativeDir } from "../agent-scope.js";
 import {
   isProfileInCooldown,
   markAuthProfileFailure,
@@ -548,19 +549,43 @@ export async function runEmbeddedPiAgent(
       let lastRunPromptUsage: ReturnType<typeof normalizeUsage> | undefined;
       let autoCompactionCount = 0;
 
-      // [MIND] Read STORY.md for narrative context injection
+      // [MIND] Read STORY.md and QUICK.md for narrative context injection
       let narrativeStory: string | undefined;
+      let quickContext: string | undefined;
       const mindConfig = getMindMemoryPluginEntry(params.config?.plugins?.entries?.["mind-memory"]);
       const isMindEnabled = mindConfig?.enabled && (mindConfig?.config?.narrative?.enabled ?? true);
       if (isMindEnabled && !isProbeSession) {
         try {
-          const path = await import("node:path");
+          const nodePath = await import("node:path");
           const { isSubagentSessionKey } = await import("../../routing/session-key.js");
           const isSubagent = params.sessionKey ? isSubagentSessionKey(params.sessionKey) : false;
 
           if (!isSubagent) {
-            const storyPath = path.join(resolvedWorkspace, "STORY.md");
+            const narrativeDir = resolveAgentNarrativeDir(
+              params.config ?? {},
+              workspaceResolution.agentId,
+            );
+            await fs.mkdir(narrativeDir, { recursive: true });
+            const storyPath = nodePath.join(narrativeDir, "STORY.md");
+            // One-time migration: copy STORY.md from workspace to narrativeDir if not yet there
+            try {
+              await fs.access(storyPath);
+            } catch {
+              const oldStoryPath = nodePath.join(resolvedWorkspace, "STORY.md");
+              try {
+                const oldContent = await fs.readFile(oldStoryPath, "utf-8");
+                await fs.writeFile(storyPath, oldContent, "utf-8");
+                process.stderr.write(
+                  `📦 [MIND] Migrated STORY.md from workspace to narrativeDir\n`,
+                );
+              } catch {
+                // No old story, that's fine
+              }
+            }
             narrativeStory = await fs.readFile(storyPath, "utf-8").catch(() => undefined);
+            quickContext = await fs
+              .readFile(nodePath.join(narrativeDir, "QUICK.md"), "utf-8")
+              .catch(() => undefined);
             if (narrativeStory && process.stderr.isTTY) {
               process.stderr.write(`📖 [MIND] Story loaded (${narrativeStory.length} chars)\n`);
             }
@@ -579,8 +604,13 @@ export async function runEmbeddedPiAgent(
 
         if (!isSubagent) {
           try {
-            const storyPath = path.join(resolvedWorkspace, "STORY.md");
-            const memoryDir = path.join(path.dirname(storyPath), "memory");
+            const narrativeDir = resolveAgentNarrativeDir(
+              params.config ?? {},
+              workspaceResolution.agentId,
+            );
+            const storyPath = path.join(narrativeDir, "STORY.md");
+            const quickPath = path.join(narrativeDir, "QUICK.md");
+            const memoryDir = path.join(resolvedWorkspace, "memory");
             const debug = !!mindConfig?.config?.debug;
 
             // Detect heartbeat prompt
@@ -696,6 +726,17 @@ export async function runEmbeddedPiAgent(
                     `📖 [MIND] Story reloaded after sync (${narrativeStory.length} chars)\n`,
                   );
                 }
+
+                // Fire-and-forget: regenerate QUICK.md from updated story
+                void cons
+                  .generateQuickProfile(storyPath, quickPath, resolvedWorkspace, subconsciousAgent)
+                  .catch((e: unknown) => {
+                    if (debug) {
+                      process.stderr.write(
+                        `⚠️ [MIND] QUICK.md regen after global sync failed: ${describeUnknownError(e)}\n`,
+                      );
+                    }
+                  });
               } catch (e: unknown) {
                 if (debug) {
                   process.stderr.write(
@@ -775,7 +816,7 @@ export async function runEmbeddedPiAgent(
                     undefined,
                     [],
                     undefined,
-                    undefined,
+                    quickContext,
                     rewriteMemories,
                   );
 
@@ -918,7 +959,12 @@ export async function runEmbeddedPiAgent(
                         const gs = new GraphService(gUrl, debug);
                         const cons = new ConsolidationService(gs, debug);
 
-                        const storyPath = path.join(resolvedWorkspace, "STORY.md");
+                        const narrativeDir = resolveAgentNarrativeDir(
+                          params.config ?? {},
+                          workspaceResolution.agentId,
+                        );
+                        const storyPath = path.join(narrativeDir, "STORY.md");
+                        const quickPath = path.join(narrativeDir, "QUICK.md");
                         const safeTokenLimit = Math.floor((ctxInfo.tokens || 50000) * 0.5);
 
                         // Resolve narrative model from config or fallback to chat model
@@ -1004,6 +1050,22 @@ export async function runEmbeddedPiAgent(
                             `✅ [MIND] Post-compaction STORY.md sync complete.\n`,
                           );
                         }
+
+                        // Fire-and-forget: regenerate QUICK.md from updated story
+                        void cons
+                          .generateQuickProfile(
+                            storyPath,
+                            quickPath,
+                            resolvedWorkspace,
+                            subconsciousAgent,
+                          )
+                          .catch((e: unknown) => {
+                            if (debug) {
+                              process.stderr.write(
+                                `⚠️ [MIND] QUICK.md regen after post-compaction failed: ${describeUnknownError(e)}\n`,
+                              );
+                            }
+                          });
                       } catch (e: unknown) {
                         process.stderr.write(
                           `❌ [MIND] Post-compaction story sync failed: ${describeUnknownError(e)}\n`,

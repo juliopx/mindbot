@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Bot, Context } from "grammy";
-import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
+import { resolveAgentNarrativeDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { resolveChunkMode } from "../auto-reply/chunk.js";
 import type { CommandArgs } from "../auto-reply/commands-registry.js";
 import {
@@ -44,7 +44,6 @@ import { resolveAgentRoute } from "../routing/resolve-route.js";
 import { resolveThreadSessionKeys } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { GraphService, type MemoryResult } from "../services/memory/GraphService.js";
-import { resolveUserPath } from "../utils.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import { firstDefined, isSenderAllowed, normalizeAllowFromWithStore } from "./bot-access.js";
 import {
@@ -791,31 +790,9 @@ export const registerTelegramNativeCommands = ({
         const threadIdForSend = isGroup ? resolvedThreadId : messageThreadId;
 
         try {
-          // Resolve STORY.md path favoring configured workspace
-          const mindConfig = cfg.plugins?.entries?.["mind-memory"] as
-            | {
-                config?: {
-                  memoryDir?: string;
-                  graphiti?: {
-                    server_url?: string;
-                    api_key?: string;
-                  };
-                };
-              }
-            | undefined;
-          const memoryDirOverride = mindConfig?.config?.memoryDir;
           const defaultAgentId = resolveDefaultAgentId(cfg);
-
-          let storyPathResolved: string;
-          if (memoryDirOverride) {
-            storyPathResolved = path.join(
-              path.dirname(resolveUserPath(memoryDirOverride)),
-              "STORY.md",
-            );
-          } else {
-            const workspaceDir = resolveAgentWorkspaceDir(cfg, defaultAgentId);
-            storyPathResolved = path.join(workspaceDir, "STORY.md");
-          }
+          const narrativeDir = resolveAgentNarrativeDir(cfg, defaultAgentId);
+          const storyPathResolved = path.join(narrativeDir, "STORY.md");
 
           const content = await fs
             .readFile(storyPathResolved, "utf-8")

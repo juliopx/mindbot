@@ -202,3 +202,14 @@ export function resolveAgentDir(cfg: OpenClawConfig, agentId: string) {
   const root = resolveStateDir(process.env);
   return path.join(root, "agents", id, "agent");
 }
+
+/**
+ * Returns the per-agent narrative data directory: ~/.openclaw/agents/<agentId>/
+ * This is where STORY.md and QUICK.md live — outside the agent's git workspace
+ * so the agent cannot accidentally edit or commit them.
+ */
+export function resolveAgentNarrativeDir(cfg: OpenClawConfig, agentId: string): string {
+  const id = normalizeAgentId(agentId);
+  const root = resolveStateDir(process.env);
+  return path.join(root, "agents", id);
+}

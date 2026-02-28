@@ -451,6 +451,68 @@ ${newStory}
   }
 
   /**
+   * Generates an ultra-compact user profile (QUICK.md) from SOUL.md, USER.md, and STORY.md.
+   * Written to quickPath atomically. Fire-and-forget safe to call without awaiting.
+   */
+  async generateQuickProfile(
+    storyPath: string,
+    quickPath: string,
+    workspaceDir: string,
+    agent: { complete: (prompt: string) => Promise<{ text?: string | null }> },
+  ): Promise<void> {
+    try {
+      const [soul, user, story] = await Promise.all([
+        fs.readFile(path.join(workspaceDir, "SOUL.md"), "utf-8").catch(() => ""),
+        fs.readFile(path.join(workspaceDir, "USER.md"), "utf-8").catch(() => ""),
+        fs.readFile(storyPath, "utf-8").catch(() => ""),
+      ]);
+
+      if (!soul && !user && !story) {
+        return;
+      }
+
+      // Use last 3000 chars of story to stay concise
+      const storyExcerpt = story.length > 3000 ? story.slice(-3000) : story;
+
+      const prompt = `You are generating an ultra-compact user profile (QUICK.md) used as fast context for AI memory retrieval.
+
+Based on the materials below, write a SINGLE dense paragraph of 500-1000 characters capturing:
+- Who this person is (identity, personality, main traits)
+- Their key relationships and life context
+- Their primary interests, projects, and current focus
+
+Be factual, specific, and dense. No headers, no lists. Pure prose, single paragraph.
+
+${soul ? `=== SOUL.md ===\n${soul}\n\n` : ""}${user ? `=== USER.md ===\n${user}\n\n` : ""}${storyExcerpt ? `=== STORY.md (recent excerpt) ===\n${storyExcerpt}\n\n` : ""}Write the profile (single paragraph, 500-1000 characters):`;
+
+      const response = await agent.complete(prompt);
+      const rawText = response?.text;
+      const text = typeof rawText === "string" ? rawText.trim() : "";
+      if (!text || text.length < 50) {
+        this.log("⚠️ [MIND] QUICK.md generation returned empty/short response, skipping.");
+        return;
+      }
+
+      const quickLockOptions: FileLockOptions = {
+        retries: { retries: 5, factor: 2, minTimeout: 200, maxTimeout: 5_000, randomize: true },
+        stale: 30_000,
+      };
+
+      await withFileLock(quickPath, quickLockOptions, async () => {
+        const tmpPath = `${quickPath}.tmp`;
+        await fs.writeFile(tmpPath, text, "utf-8");
+        await fs.rename(tmpPath, quickPath);
+      });
+
+      this.log(`⚡ [MIND] QUICK.md updated (${text.length} chars) at ${quickPath}`);
+    } catch (e: unknown) {
+      process.stderr.write(
+        `⚠️ [MIND] QUICK.md generation failed: ${e instanceof Error ? e.message : String(e)}\n`,
+      );
+    }
+  }
+
+  /**
    * Processes legacy memory files (YYYY-MM-DD.md) and integrates them into the story.
    * This now concatenates ALL historical files into ONE transcript to avoid iteration issues.
    */
@@ -460,12 +522,13 @@ ${newStory}
     agent: { complete: (prompt: string) => Promise<{ text?: string }> },
     identityContext: string | undefined,
     safeTokenLimit: number,
+    memoryDir?: string,
   ): Promise<string> {
-    const memoryDir = path.join(path.dirname(storyPath), "memory");
+    const resolvedMemoryDir = memoryDir ?? path.join(path.dirname(storyPath), "memory");
     let currentStory = "";
 
     try {
-      const files = await fs.readdir(memoryDir);
+      const files = await fs.readdir(resolvedMemoryDir);
       const mdFiles = [...files].filter((f) => f.endsWith(".md")).toSorted();
 
       if (mdFiles.length === 0) {
@@ -489,7 +552,7 @@ ${newStory}
       let latestTimestamp: number | undefined;
 
       for (const file of mdFiles) {
-        const filePath = path.join(memoryDir, file);
+        const filePath = path.join(resolvedMemoryDir, file);
         const content = await fs.readFile(filePath, "utf-8");
         const fragment = `--- HISTORICAL LOG: ${file} ---\n${content}\n\n`;
 

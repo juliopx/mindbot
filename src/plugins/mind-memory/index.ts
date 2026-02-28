@@ -3,7 +3,11 @@ import { fileURLToPath } from "node:url";
 import { complete } from "@mariozechner/pi-ai";
 import type { Command } from "commander";
 import { resolveOpenClawAgentDir } from "../../agents/agent-paths.js";
-import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../../agents/agent-scope.js";
+import {
+  resolveAgentNarrativeDir,
+  resolveAgentWorkspaceDir,
+  resolveDefaultAgentId,
+} from "../../agents/agent-scope.js";
 import { resolveModel } from "../../agents/pi-embedded-runner/model.js";
 import type { OpenClawPluginApi } from "../../plugins/types.js";
 import { ConsolidationService } from "../../services/memory/ConsolidationService.js";
@@ -93,7 +97,11 @@ export default function register(api: PluginApi) {
               const agentId = resolveDefaultAgentId(api.config);
               const workspaceDir = resolveAgentWorkspaceDir(api.config, agentId);
               const memoryDir = config.memoryDir || path.join(workspaceDir, "memory");
-              const storyPath = path.join(path.dirname(memoryDir), "STORY.md");
+              const narrativeDir = resolveAgentNarrativeDir(api.config, agentId);
+              await import("node:fs/promises").then((fsPromises) =>
+                fsPromises.mkdir(narrativeDir, { recursive: true }),
+              );
+              const storyPath = path.join(narrativeDir, "STORY.md");
 
               // We need a lightweight agent for this
               const agentDir = path.dirname(pluginDir);
@@ -145,6 +153,7 @@ export default function register(api: PluginApi) {
                   bridge,
                   "You are a helpful assistant.",
                   100000,
+                  memoryDir,
                 );
                 api.logger.info("✅ Historical autobiography generated.");
               } else {
@@ -216,7 +225,14 @@ export default function register(api: PluginApi) {
       const agentId = resolveDefaultAgentId(api.config);
       const workspaceDir = resolveAgentWorkspaceDir(api.config, agentId);
       const memoryDir = config.memoryDir || path.join(workspaceDir, "memory");
+      const narrativeDir = resolveAgentNarrativeDir(api.config, agentId);
       await consolidator.bootstrapHistoricalEpisodes(sessionId, memoryDir);
+
+      // Read QUICK.md for observer context
+      const { readFile } = await import("node:fs/promises");
+      const quickContext = await readFile(path.join(narrativeDir, "QUICK.md"), "utf-8").catch(
+        () => undefined,
+      );
 
       const flashbacks = await subconscious.getFlashback(
         sessionId,
@@ -225,7 +241,7 @@ export default function register(api: PluginApi) {
         oldestContextTimestamp ? new Date(oldestContextTimestamp) : undefined,
         [],
         undefined,
-        undefined,
+        quickContext,
         config.graphiti?.rewriteMemories ?? true,
       );
       respond(true, { flashbacks });
@@ -339,7 +355,7 @@ export default function register(api: PluginApi) {
 
   // 4. Register before_reset hook to sync the ending session to STORY.md when /new or /reset is called.
   // This is fire-and-forget so it doesn't block the session reset.
-  api.on("before_reset", (event, ctx) => {
+  api.on("before_reset", (event, _ctx) => {
     const { messages } = event;
     if (!messages || messages.length === 0) {
       return;
@@ -348,8 +364,10 @@ export default function register(api: PluginApi) {
     void (async () => {
       try {
         const agentId = resolveDefaultAgentId(api.config);
-        const workspaceDir = ctx.workspaceDir ?? resolveAgentWorkspaceDir(api.config, agentId);
-        const storyPath = path.join(workspaceDir, "STORY.md");
+        const narrativeDir = resolveAgentNarrativeDir(api.config, agentId);
+        const { mkdir } = await import("node:fs/promises");
+        await mkdir(narrativeDir, { recursive: true });
+        const storyPath = path.join(narrativeDir, "STORY.md");
         const agentDir = resolveOpenClawAgentDir();
         const debug = !!config.debug;
 

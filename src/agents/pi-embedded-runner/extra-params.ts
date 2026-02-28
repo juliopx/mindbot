@@ -74,6 +74,15 @@ function resolveCacheRetention(
   return "short";
 }
 
+const KNOWN_EXTRA_PARAMS = new Set([
+  "temperature",
+  "maxTokens",
+  "cacheRetention",
+  "cacheControlTtl",
+  "anthropicBeta",
+  "context1m",
+]);
+
 function createStreamFnWithExtraParams(
   baseStreamFn: StreamFn | undefined,
   extraParams: Record<string, unknown> | undefined,
@@ -95,18 +104,42 @@ function createStreamFnWithExtraParams(
     streamParams.cacheRetention = cacheRetention;
   }
 
-  if (Object.keys(streamParams).length === 0) {
+  // Collect unknown params to inject directly into the API payload via onPayload.
+  // This allows model-specific params (e.g. cache_prompt for llama.cpp) to be
+  // configured per-model in openclaw.json under agents.defaults.models.<key>.params.
+  const payloadParams: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(extraParams)) {
+    if (!KNOWN_EXTRA_PARAMS.has(key)) {
+      payloadParams[key] = value;
+    }
+  }
+  const hasPayloadParams = Object.keys(payloadParams).length > 0;
+
+  if (Object.keys(streamParams).length === 0 && !hasPayloadParams) {
     return undefined;
   }
 
-  log.debug(`creating streamFn wrapper with params: ${JSON.stringify(streamParams)}`);
+  log.debug(
+    `creating streamFn wrapper with params: ${JSON.stringify({ ...streamParams, ...payloadParams })}`,
+  );
 
   const underlying = baseStreamFn ?? streamSimple;
-  const wrappedStreamFn: StreamFn = (model, context, options) =>
-    underlying(model, context, {
+  const wrappedStreamFn: StreamFn = (model, context, options) => {
+    if (!hasPayloadParams) {
+      return underlying(model, context, { ...streamParams, ...options });
+    }
+    const originalOnPayload = options?.onPayload;
+    return underlying(model, context, {
       ...streamParams,
       ...options,
+      onPayload: (payload: unknown) => {
+        if (payload && typeof payload === "object") {
+          Object.assign(payload as Record<string, unknown>, payloadParams);
+        }
+        originalOnPayload?.(payload);
+      },
     });
+  };
 
   return wrappedStreamFn;
 }

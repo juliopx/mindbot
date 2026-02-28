@@ -605,10 +605,7 @@ ${newStory}
         ? path.basename(currentSessionFile)
         : undefined;
       const jsonlFiles = files
-        .filter(
-          (f) =>
-            (f.endsWith(".jsonl") || f.includes(".jsonl.reset.")) && f !== currentSessionBasename,
-        )
+        .filter((f) => f.endsWith(".jsonl") && f !== currentSessionBasename)
         .map((f) => path.join(sessionsDir, f));
       if (currentSessionBasename) {
         this.log(`   Excluding current session: ${currentSessionBasename}`);

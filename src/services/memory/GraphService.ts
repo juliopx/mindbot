@@ -384,7 +384,7 @@ export class GraphService {
       const data = await this.callMcpTool("search_nodes", {
         query: safeQuery,
         group_ids: groupIds,
-        max_nodes: 50,
+        max_nodes: 10,
       });
 
       if (!data) {
@@ -467,6 +467,7 @@ export class GraphService {
       const data = await this.callMcpTool("search_memory_facts", {
         query: safeQuery,
         group_ids: groupIds,
+        max_facts: 10,
       });
 
       if (!data) {

@@ -72,7 +72,7 @@ export class SubconsciousService {
       ];
     }
 
-    const analysisWindow = recentMessages.slice(-10);
+    const analysisWindow = recentMessages.slice(-20);
     const historyText =
       analysisWindow.length > 0
         ? analysisWindow
@@ -87,38 +87,28 @@ export class SubconsciousService {
         : "(No previous context)";
 
     const userContextBlock = quickContext?.trim()
-      ? `USER CONTEXT (ultra-compact profile):\n${quickContext.trim()}\n\n`
+      ? `USER PROFILE (use only to resolve who people are — do NOT generate queries about this):\n${quickContext.trim()}`
       : "";
 
     const prompt = `You are the "Subconscious Observer" of an artificial mind.
-Your task is to generate search queries to retrieve relevant past memories from a knowledge graph.
+Your task: generate 3 search queries to retrieve relevant past memories from a knowledge graph.
 
-${userContextBlock}
-
-OBJECTIVE:
-Generate exactly 3 search queries covering the main topics of the RECENT CONVERSATION.
-
-QUERY BUDGET:
-- Query 1-2: Focus on the LATEST MESSAGE — its main topics, people, events or facts.
-- Query 3: Focus on a DIFFERENT significant topic from the RECENT HISTORY (if distinct from the latest message). If the whole conversation is about the same topic, use a broader angle instead.
-
-STRICT GUIDELINES:
-1. ENTITY RESOLUTION: Replace pronouns (she, he, it, su, su familia, etc.) with actual names/entities from context.
-   - Example: "her family" + history mentions "Alice" → search "Alice family".
-2. NO META-CONVERSATION: Skip queries about conversation state (greetings, confirmations, agreements). Substantive content only (people, events, facts, places).
-3. DIVERSITY: No two queries should be near-identical. Cover different facets.
-4. LANGUAGE: Use the same language as the conversation.
-
-IGNORE messaging protocol metadata (e.g., "[Telegram ...]", [TIMESTAMP], user IDs).
-
-LATEST MESSAGE:
-"${cleanedPrompt}"
-
-RECENT HISTORY:
+${userContextBlock ? `${userContextBlock}\n\n` : ""}CONVERSATION:
 ${historyText}
 
-Respond with exactly 3 queries, one per line.
-DO NOT include numbers, bullets, headers or explanations.`;
+LATEST MESSAGE: "${cleanedPrompt}"
+
+TASK:
+Read the full conversation. Generate 3 search queries that capture the most relevant people, events, and facts — prioritizing what is happening in the recent/latest exchange, but understood in the context of the full conversation thread.
+
+RULES:
+1. CONCRETE — queries must name specific people, places, events or facts from the conversation. Never generate abstract queries about "the user", "general topics" or "previous interactions".
+2. ENTITY RESOLUTION — always replace pronouns with their actual referent from context (e.g. "he", "she", "it" → the actual name or entity).
+3. FILLER MESSAGES — if the latest message is a short reaction or filler (e.g. "ok", "haha", "yes", "I see"…), base the queries on the substance of the recent exchanges instead.
+4. LANGUAGE — respond in the same language as the conversation.
+5. NO METADATA — ignore timestamps, user IDs, system labels.
+
+Respond with exactly 3 queries, one per line. No numbers, bullets, or explanations.`;
 
     this.log(`  👁️ [OBSERVER] Performing entity resolution and generating search queries...`);
 

@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { getRelativeTimeDescription } from "../../utils/time-format.js";
 import { GraphService, type MemoryResult } from "./GraphService.js";
 
@@ -33,14 +34,11 @@ export class SubconsciousService {
    * Detects immediate verbatim repetitions of 8+ characters to kill LLM loops.
    */
   private truncateRepetitive(text: string): string {
-    // We look for patterns that repeat immediately.
-    // Example: "PatternPattern" -> "Pattern"
     for (let len = Math.floor(text.length / 2); len >= 3; len--) {
       for (let i = 0; i <= text.length - 2 * len; i++) {
         const chunk = text.substring(i, i + len);
         const next = text.substring(i + len, i + 2 * len);
         if (chunk === next && chunk.trim().length >= 3) {
-          // Truncation log reduced to avoid noise
           return text.substring(0, i + len);
         }
       }
@@ -57,11 +55,15 @@ export class SubconsciousService {
     recentMessages: RecentMessage[],
     agent?: LLMClient,
   ): Promise<string[]> {
+    // Strip "Conversation info (untrusted metadata)" JSON blocks if present
+    const cleanedPrompt = currentPrompt
+      .replace(/Conversation info \(untrusted metadata\):\s*```json[\s\S]*?```/g, "")
+      .trim();
+
     if (!agent) {
       this.log(`  👁️ [OBSERVER] No agent available, using naive keyword extraction.`);
-      // Fallback: simple keyword extraction if no agent
       return [
-        currentPrompt
+        cleanedPrompt
           .split(/\s+/)
           .filter((w) => w.length > 5)
           .slice(0, 3)
@@ -69,8 +71,7 @@ export class SubconsciousService {
       ];
     }
 
-    // 1. History Windowing: Only look at the last 5 messages to avoid bias towards old topics.
-    const analysisWindow = recentMessages.slice(-5);
+    const analysisWindow = recentMessages.slice(-10);
     const historyText =
       analysisWindow.length > 0
         ? analysisWindow
@@ -85,47 +86,41 @@ export class SubconsciousService {
         : "(No previous context)";
 
     const prompt = `You are the "Subconscious Observer". 
-Analyze the current user input and generate 2-3 specific search keywords to find related memories.
-Prioritize the CURRENT USER INPUT. Use the HISTORY only for disambiguation or context.
+Analyze the CURRENT USER INPUT and use the recent HISTORY for ENTITY RESOLUTION.
 
-IMPORTANT: IGNORE all messaging protocol metadata (e.g., "[Telegram ...]", "tg:", "[WhatsApp ...]", "[Slack ...]", user IDs, timestamps) and focus ONLY on the natural language content of the message.
+OBJECTIVE:
+Generate 2-3 distinct search queries to find related memories in a knowledge graph.
+
+STRICT GUIDELINES:
+1. SEARCH INTENT: Your goal is to find PAST INFORMATION related to the CURRENT TOPICS.
+2. ENTITY RESOLUTION: You MUST replace pronouns (she, he, it, her, su, su familia) with the actual names or entities mentioned in the HISTORY. 
+   - Context: If the user says "family" and the history is about "Alice", search for "family of alice".
+3. NO META-CONVERSATION: Do NOT generate queries about the conversation state (e.g., "agreement", "confirmation", "user question", "greeting"). Focus ONLY on substantive content (people, events, facts).
+4. DIVERSITY: Generate queries that cover different possible ways the information might be stored (e.g., one specific, one broader).
+
+IMPORTANT: IGNORE all messaging protocol metadata (e.g., "[Telegram ...]", [TIMESTAMP], user IDs).
 
 CURRENT USER INPUT:
-"${currentPrompt}"
+"${cleanedPrompt}"
 
 HISTORY (for context):
 ${historyText}
 
-Respond with ONLY a newline-separated list of 1-3 terms (max 3 words each). 
-BE CONCISE. DO NOT include headers or explanations.`;
+Respond with 2-3 queries, one per line. 
+DO NOT include numbers, bullets, headers or explanations.`;
 
-    this.log(`  👁️ [OBSERVER] Analyzing context for search seeds...`);
-    this.log(`      - Prompt: "${currentPrompt}"`);
-    this.log(`      - Context: ${analysisWindow.length} prev messages`);
-    if (analysisWindow.length > 0) {
-      const lastMsg = analysisWindow[analysisWindow.length - 1];
-      let lastText = lastMsg.text || lastMsg.content || "";
-      if (Array.isArray(lastText)) {
-        lastText = lastText.map((p) => (typeof p === "string" ? p : p.text || "")).join(" ");
-      }
-      this.log(`      - Last Context Msg: "${lastText}"`);
-    }
+    this.log(`  👁️ [OBSERVER] Performing entity resolution and generating search queries...`);
 
     try {
       const response = await agent.complete(prompt);
       let rawOutput = (response?.text || "").trim();
 
-      // Kill massive hallucinations / loops
       rawOutput = this.truncateRepetitive(rawOutput);
 
-      this.log(`  🔍 [SEEKER] Raw LLM output: "${rawOutput.replace(/\n/g, "\\n")}"`);
-
-      // 1. Loop Breaker: If LLM is repeating whole sentences/blocks,
-      // we only care about the very beginning.
       const lines = rawOutput
         .split("\n")
         .map((l) => l.trim())
-        .filter((l) => l.length > 0);
+        .filter((l) => l.length > 3);
 
       const queries: string[] = [];
       const seenWords = new Set<string>();
@@ -143,7 +138,6 @@ BE CONCISE. DO NOT include headers or explanations.`;
           continue;
         }
 
-        // Dedup individual words across ALL queries to kill loops
         const tokens = clean.split(/\s+/);
         const uniqueTokens = tokens.filter((t) => {
           const lct = t.toLowerCase();
@@ -154,86 +148,20 @@ BE CONCISE. DO NOT include headers or explanations.`;
           return true;
         });
 
-        if (uniqueTokens.length > 0) {
-          const finalQ = uniqueTokens.join(" ");
-          // Sanity check: no word should be abnormally long (prevents "stuck" words)
-          const hasGarbage = uniqueTokens.some((t) => t.length > 25);
-          if (finalQ.length > 2 && finalQ.length < 40 && !hasGarbage) {
-            queries.push(finalQ);
-          }
+        if (uniqueTokens.length > 1) {
+          queries.push(uniqueTokens.join(" "));
         }
       }
 
-      const finalQueries = queries.slice(0, 3);
-
-      if (finalQueries.length === 0) {
-        // Fallback to naive: just first few words of prompt
-        return [currentPrompt.split(/\s+/).slice(0, 4).join(" ")];
+      if (queries.length === 0) {
+        queries.push(cleanedPrompt.substring(0, 50));
       }
 
-      this.log(`  🔍 [SEEKER] Parsed queries: ${finalQueries.map((q) => `"${q}"`).join(", ")}`);
-      return finalQueries;
-    } catch {
-      process.stderr.write(`  ⚠️ [SEEKER] Error generating queries, fallback to prompt start.\n`);
-      return [currentPrompt.substring(0, 20)];
+      return queries;
+    } catch (e) {
+      this.log(`  ❌ [OBSERVER] Error generating queries: ${String(e)}`);
+      return [cleanedPrompt.substring(0, 50)];
     }
-  }
-
-  /**
-   * Identifies concrete entities from the current prompt to use as BFS seeds.
-   */
-  async extractEntities(currentPrompt: string, agent: LLMClient): Promise<string[]> {
-    const prompt = `Identify 1-3 concrete entities (people, names, specific objects) in the text below.
-Respond ONLY with the entities separated by commas.
-If no specific entities are found, respond strictly with "NONE".
-
-IMPORTANT: IGNORE all messaging protocol metadata (e.g., "[Telegram ...]", "tg:", "[WhatsApp ...]", "[Slack ...]", user IDs, timestamps). Do NOT extract the sender's name or ID unless it is explicitly part of the narrative content. Focus on the message CONTENT.
-
-Text: "${currentPrompt}"`;
-
-    const response = await agent.complete(prompt);
-    let text = (response?.text || "").trim();
-
-    // Kill massive hallucinations / loops
-    text = this.truncateRepetitive(text);
-
-    if (text.length > 0) {
-      this.log(`  🔍 [ENTITY] Raw LLM output: "${text.replace(/\n/g, "\\n")}"`);
-      this.log(`      - Source Text: "${currentPrompt}"`);
-    }
-
-    if (text.includes("NONE") || text.length < 2) {
-      return [];
-    }
-
-    const rawItems = text
-      .split(",")
-      .map((e) => e.trim())
-      .filter((e) => e.length > 0);
-    const entities: string[] = [];
-    const seenWords = new Set<string>();
-
-    for (const item of rawItems) {
-      if (entities.length >= 3) {
-        break;
-      }
-
-      const words = item.split(/\s+/);
-      const uniqueWords = words.filter((w) => {
-        const lw = w.toLowerCase();
-        if (seenWords.has(lw) || lw.length > 25) {
-          return false;
-        }
-        seenWords.add(lw);
-        return true;
-      });
-
-      if (uniqueWords.length > 0) {
-        entities.push(uniqueWords.join(" "));
-      }
-    }
-
-    return entities;
   }
 
   /**
@@ -243,43 +171,23 @@ Text: "${currentPrompt}"`;
   private applyEchoFilter(results: MemoryResult[]): MemoryResult[] {
     const beforeCount = results.length;
     const filtered = results.filter((r) => {
-      // RESONANCE BOOST: If it's the #1 hit for a specific query search (marked externally),
-      // we might want to bypass the filter. For now, let's stick to strict filter
-      // but only if it's NOT a very strong match or some other criteria.
-      // Actually, let's just make the window smaller as done before,
-      // and allow "Boosted" items if we add that flag.
       if (r._boosted) {
         return true;
       }
-
       const id = r.message?.uuid || r.uuid || JSON.stringify(r.text || r.content);
-      if (this.recentlyRecalled.has(id)) {
-        return false;
-      }
-      return true;
+      return !this.recentlyRecalled.has(id);
     });
 
-    const filteredCount = beforeCount - filtered.length;
-    if (filteredCount > 0) {
-      this.log(`  ♻️[ECHO FILTER] Blocked ${filteredCount} redundant memories.`);
+    const blockedCount = beforeCount - filtered.length;
+    if (blockedCount > 0) {
+      this.log(`  🔇 [ECHO] Blocked ${blockedCount} redundant memories.`);
     }
 
-    // Extended Debug for lost facts
-    filtered.forEach((r) => {
-      if (r._sourceQuery && r._sourceQuery.includes("Fact")) {
-        this.log(`  ✅[ECHO PASS] Fact retained: "${r.content}"`);
-      }
-    });
-
-    // Track only the ones we actually USE (the filtered ones)
-    // Wait, if we track everything, we prevent them from coming back.
-    // Let's only track the ones that passed the filter.
     filtered.forEach((r) => {
       const id = r.message?.uuid || r.uuid || JSON.stringify(r.text || r.content);
       this.recentlyRecalled.add(id);
     });
 
-    // Limit cache size
     if (this.recentlyRecalled.size > this.maxEchoFilterSize) {
       const items = Array.from(this.recentlyRecalled);
       this.recentlyRecalled = new Set(items.slice(-this.maxEchoFilterSize));
@@ -300,66 +208,40 @@ Text: "${currentPrompt}"`;
       return results;
     }
 
+    this.log(`  🌅 [HORIZON] Threshold: ${oldestContextTimestamp.toISOString()}`);
     const beforeCount = results.length;
     const filtered = results.filter((r) => {
-      let timestamp: string | Date | undefined =
-        r.message?.created_at || r.message?.createdAt || r.timestamp;
-
-      // Extract content to check for embedded tags
       const content = r.message?.content || r.text || r.content || "";
       const dateTagMatch = content.match(
         /(?:Ocurrido el|memory log for|FECHA:|DATE:)\s*(\d{4}-\d{2}-\d{2})/i,
       );
-      let source = "metadata";
+
+      let timestamp: string | Date | undefined =
+        r.message?.created_at || r.message?.createdAt || r.timestamp;
 
       if (dateTagMatch) {
         timestamp = dateTagMatch[1];
-        source = "tag";
       } else {
         const tsMatch = content.match(/\[TIMESTAMP:([^\]]+)\]/);
         if (tsMatch) {
           timestamp = tsMatch[1];
-          source = "embedded";
         }
       }
 
-      const thresholdStr = oldestContextTimestamp.toISOString();
       if (!timestamp) {
-        this.log(
-          `  ✅[HORIZON] Allowed: No timestamp | Threshold(${thresholdStr}) | "${content.replace(/\n/g, " ")}"`,
-        );
+        return true;
+      }
+      const memoryDate = new Date(timestamp);
+      if (isNaN(memoryDate.getTime())) {
         return true;
       }
 
-      const memoryDate = new Date(timestamp);
-
-      if (isNaN(memoryDate.getTime())) {
-        this.log(
-          `  ⚠️[HORIZON] Skipped invalid date: "${timestamp}" | "${content.replace(/\n/g, " ")}"`,
-        );
-        return true; // Default to allow if date is broken
-      }
-
-      const isAllowed = memoryDate < oldestContextTimestamp;
-
-      const status = isAllowed ? "✅" : "❌";
-      const action = isAllowed ? "Allowed" : "Blocked";
-      const memDateStr = memoryDate.toISOString();
-      const isFact = r._sourceQuery?.includes("Fact"); /* Check if it came from facts */
-      const typeLabel = isFact ? "[FACT]" : "[NODE]";
-
-      this.log(
-        `  ${status}[HORIZON] ${action}: ${typeLabel} Mem(${memDateStr} via ${source}) < Threshold(${thresholdStr}) | "${content.replace(/\n/g, " ")}"`,
-      );
-
-      return isAllowed;
+      return memoryDate.getTime() < oldestContextTimestamp.getTime();
     });
 
     const filteredCount = beforeCount - filtered.length;
     if (filteredCount > 0) {
-      this.log(
-        `  🌅[HORIZON] Total blocked: ${filteredCount} memories newer than conversation context.`,
-      );
+      this.log(`  🌅 [HORIZON] Blocked ${filteredCount} memories newer than conversation context.`);
     }
     return filtered;
   }
@@ -372,54 +254,47 @@ Text: "${currentPrompt}"`;
     recentMessages: RecentMessage[] = [],
     soulContext?: string,
     storyContext?: string,
+    rewriteMemories: boolean = true,
   ): Promise<string> {
     this.log("🧠 [MIND] Subconscious is exploring memories...");
+    const startTime = performance.now();
 
-    const queries = [
-      ...new Set(
-        await this.generateSeekerQueries(currentPrompt, recentMessages, agent ?? undefined),
-      ),
-    ];
+    const t0 = performance.now();
+    const searchQueries = await this.generateSeekerQueries(
+      currentPrompt,
+      recentMessages,
+      agent ?? undefined,
+    );
+    const t_queries = performance.now() - t0;
 
-    // 1. Neural Resonance (Graph Retrieval)
-    const entities = agent ? await this.extractEntities(currentPrompt, agent) : [];
     let allResults: MemoryResult[] = [];
+    const seenUris = new Set<string>();
 
-    if (entities.length > 0) {
-      this.log(`  🔗[GRAPH] Seeds found: ${entities.join(", ")}.Exploring graph...`);
-      const graphMemories = await this.graph.searchGraph(sessionId, entities, 2);
-      if (graphMemories.length > 0) {
-        this.log(`    ✅[GRAPH] Found ${graphMemories.length} memories via graph traversal.`);
-        allResults = [...graphMemories];
-      } else {
-        this.log(`    ❌[GRAPH] No memories found via graph traversal.`);
-      }
-    }
+    this.log(`  📊 [MIND] Executing ${searchQueries.length} semantic queries in parallel...`);
 
-    // 2. Supplemental Semantic Search for Seeker Queries
-    for (const query of queries) {
-      this.log(`  🔎[GRAPH] Deep searching for: "${query}"...`);
+    const t1 = performance.now();
+    // Execute all queries in parallel
+    const parallelResults = await Promise.all(
+      searchQueries.map(async (query) => {
+        const [nodes, facts] = await Promise.all([
+          this.graph.searchNodes(sessionId, query),
+          this.graph.searchFacts(sessionId, query),
+        ]);
+        return { query, nodes, facts };
+      }),
+    );
 
-      // Parallel search for nodes and facts
-      const [nodes, facts] = await Promise.all([
-        this.graph.searchNodes(sessionId, query),
-        this.graph.searchFacts(sessionId, query),
-      ]);
-
-      if (nodes.length > 0) {
-        this.log(`    ✅[GRAPH] Found ${nodes.length} nodes for query: "${query}"`);
-        allResults.push(...nodes);
-      }
-      if (facts.length > 0) {
-        this.log(`    ✅[GRAPH] Found ${facts.length} facts for query: "${query}"`);
-        facts.forEach((f) => {
-          this.log(`       -> Fact: "${f.content}"`);
-        });
-        allResults.push(...facts);
-      }
-
-      if (nodes.length === 0 && facts.length === 0) {
-        this.log(`    ❌[GRAPH] No results for query: "${query}"`);
+    for (const { query, nodes, facts } of parallelResults) {
+      this.log(
+        `    ✅ [GRAPH] Query "${query}": Found ${nodes.length} nodes and ${facts.length} facts.`,
+      );
+      const results = [...nodes, ...facts];
+      for (const res of results) {
+        const id = res.message?.uuid || res.uuid || res.content;
+        if (id && !seenUris.has(id)) {
+          allResults.push(res);
+          seenUris.add(id);
+        }
       }
     }
 
@@ -428,176 +303,212 @@ Text: "${currentPrompt}"`;
       return "";
     }
 
-    // Deduplicate by content or a unique ID if available
-    const uniqueMap = new Map<string, MemoryResult>();
-    for (const r of allResults) {
-      const id = r.content; // Assuming 'content' can serve as a unique identifier
-      if (!uniqueMap.has(id)) {
-        uniqueMap.set(id, r);
-      }
+    this.log(
+      `  ✅ [GRAPH] Found ${allResults.length} potential memories across ${searchQueries.length} queries.`,
+    );
+
+    const afterHorizon = this.applyMemoryHorizon(allResults, oldestContextTimestamp);
+    const afterEcho = this.applyEchoFilter(afterHorizon);
+
+    if (afterEcho.length === 0) {
+      this.log("🔍 [MIND] No relevant flashbacks found after filtering.");
+      return "";
     }
-    allResults = Array.from(uniqueMap.values());
 
-    this.log(`  📊[SYNTHESIZER] Total unique matches: ${allResults.length} `);
+    // Sort: Boosted > Facts > Time parity (to mix old/new)
+    afterEcho.sort((a, b) => {
+      if (a._boosted && !b._boosted) {
+        return -1;
+      }
+      if (!a._boosted && b._boosted) {
+        return 1;
+      }
 
-    // 3. Memory Horizon (Temporal Filter)
-    // Ensures we don't inject things that are already in the visible context
-    const horizonFiltered = this.applyMemoryHorizon(allResults, oldestContextTimestamp);
+      const aIsFact = a._sourceQuery?.toLowerCase().includes("fact") ?? false;
+      const bIsFact = b._sourceQuery?.toLowerCase().includes("fact") ?? false;
+      if (aIsFact && !bIsFact) {
+        return -1;
+      }
+      if (!aIsFact && bIsFact) {
+        return 1;
+      }
 
-    // 4. Echo Filter (Satiety)
-    const deduplicated = this.applyEchoFilter(horizonFiltered);
-
-    // Deduplicate exact content early to allow variety, then sort to prioritize:
-    // 1) BOOSTED, 2) Facts over Nodes, 3) Interleaving old and new to avoid "all from same day"
-    deduplicated.sort((a, b) => {
-      // First tier: Boosted
-      if (a._boosted && !b._boosted) return -1;
-      if (!a._boosted && b._boosted) return 1;
-
-      // Second tier: Facts over Nodes
-      const aIsFact = a._sourceQuery?.includes("Fact") ?? false;
-      const bIsFact = b._sourceQuery?.includes("Fact") ?? false;
-      if (aIsFact && !bIsFact) return -1;
-      if (!aIsFact && bIsFact) return 1;
-
-      // Third tier: Pseudo-random distribution based on timestamp parity to mix old/new
-      const aTs = a.timestamp || a.message?.created_at || a.message?.createdAt || 0;
-      const bTs = b.timestamp || b.message?.created_at || b.message?.createdAt || 0;
-      const timeDiff = new Date(aTs).getTime() - new Date(bTs).getTime();
-      return Math.random() > 0.5 ? timeDiff : -timeDiff;
+      const aTs = new Date(
+        a.timestamp || a.message?.created_at || a.message?.createdAt || 0,
+      ).getTime();
+      const bTs = new Date(
+        b.timestamp || b.message?.created_at || b.message?.createdAt || 0,
+      ).getTime();
+      return Math.random() > 0.5 ? aTs - bTs : bTs - aTs;
     });
 
-    const finalLines: string[] = [];
+    const groupedMemories = new Map<
+      string,
+      Array<{ content: string; date: Date; relativeTime: string; isFact: boolean }>
+    >();
     const seenContent = new Set<string>();
+    let totalSelected = 0;
 
-    for (const r of deduplicated) {
-      if (finalLines.length >= 5) {
+    for (const r of afterEcho) {
+      if (totalSelected >= 10) {
         break;
-      }
+      } // Increased total limit to allow grouping from multiple queries
+
       let content = r.message?.content || r.text || r.content || "";
-      // Strip timestamp tags
       content = content.replace(/\[TIMESTAMP:[^\]]+\]/g, "").trim();
 
-      // Filter out technical JSON strings that might leak
       if (content.startsWith("{") && content.endsWith("}")) {
         continue;
       }
 
-      // TOUGH DEDUPLICATION: Strip fillers and normalize
-      const fillerRegex = /^(oye|recuerda|sabias que|dime|hey|escucha)[,\s]*/gi;
-      const normalizedForComparison = content
-        .replace(fillerRegex, "")
+      const normalized = content
         .toLowerCase()
         .replace(/[^a-z0-9]/g, "")
         .substring(0, 30);
-
-      if (!normalizedForComparison || seenContent.has(normalizedForComparison)) {
-        if (r._sourceQuery?.includes("Fact")) {
-          this.log(`  🗑️[DEDUP] Dropping Fact(already seen): "${content}"`);
-        }
+      if (!normalized || seenContent.has(normalized)) {
         continue;
       }
+      seenContent.add(normalized);
 
-      seenContent.add(normalizedForComparison);
-
-      let finalDate: Date = r.message?.created_at ? new Date(r.message?.created_at) : new Date();
-      if (r.message?.createdAt) {
-        finalDate = new Date(r.message.createdAt);
-      }
-      if (r.timestamp) {
-        finalDate = new Date(r.timestamp);
-      }
-
-      // Check for common date tags (DATE, etc)
-      const dateTagMatch = content.match(
-        /(?:memory log for|DATE:)\s*(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)?)/i,
+      const finalDate = new Date(
+        r.timestamp || r.message?.created_at || r.message?.createdAt || Date.now(),
       );
-      if (dateTagMatch) {
-        const taggedDate = new Date(dateTagMatch[1]);
-        if (!isNaN(taggedDate.getTime())) {
-          finalDate = taggedDate;
-        }
-      }
-
-      // Check for embedded [TIMESTAMP:...]
-      const timestampMatch = content.match(/\[TIMESTAMP:([^\]]+)\]/);
-      if (timestampMatch) {
-        const embeddedDate = new Date(timestampMatch[1]);
-        if (!isNaN(embeddedDate.getTime())) {
-          finalDate = embeddedDate;
-          content = content.replace(timestampMatch[0], "").trim();
-        }
-      }
-
       const relativeTime = getRelativeTimeDescription(finalDate);
-      const isFact = r._sourceQuery?.includes("Fact") ?? false;
+      const isFact = r._sourceQuery?.toLowerCase().includes("fact") ?? false;
+      const queryGroup = r._sourceQuery || "General Context";
 
-      if (isFact) {
-        this.log(`  ✨[FINAL] Adding Fact to Resonance: "${content}"`);
+      if (!groupedMemories.has(queryGroup)) {
+        groupedMemories.set(queryGroup, []);
       }
-
-      finalLines.push(`- [${relativeTime}] ${content} `);
+      groupedMemories.get(queryGroup)!.push({ content, date: finalDate, relativeTime, isFact });
+      totalSelected++;
     }
 
-    if (finalLines.length === 0) {
-      this.log("💤 [MIND] No relevant memories passed filters.");
-      return "";
-    }
+    const t_search = performance.now() - t1;
 
-    let rewrittenLines = finalLines.join("\n");
-    if (agent) {
-      this.log("  ✍️ [MIND] Rewriting memories into natural first-person narrative...");
-      const translationPrompt = `Convert the following database notes into personal, first-person memories. 
-You are the AI remembering your past interactions with the user.
+    let rewrittenLines = "";
+    const t2 = performance.now();
+    if (agent && rewriteMemories) {
+      this.log(`  ✍️ [MIND] Rewriting ${groupedMemories.size} memory groups in parallel...`);
+
+      const rewritePromises = Array.from(groupedMemories.entries()).map(
+        async ([query, memories]) => {
+          // Clean up the query string for display
+          let displayQuery = query;
+          const match = query.match(/\((.*?)\)/);
+          if (match && match[1]) {
+            displayQuery = match[1].replace(/\.\.\.$/, "");
+          }
+
+          const groupHeader = `--- PENSAR EN "${displayQuery}" ME RECUERDA QUE ---`;
+          const groupLines: string[] = [groupHeader];
+
+          // Sort chronologically within the group
+          memories.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+          for (const m of memories) {
+            if (m.isFact) {
+              this.log(`  ✨ [FINAL] Adding Fact to Resonance: "${m.content.substring(0, 60)}..."`);
+            }
+            groupLines.push(`- [${m.relativeTime}] ${m.content}`);
+          }
+
+          const translationPrompt = `Convert the following database notes into personal, first-person memories for a specific search topic.
+You are the AI. subconsciously remembering your past interactions with the user.
 CRITICAL: Write the memories in the EXACT SAME LANGUAGE as the CURRENT USER MESSAGE below.
-Keep it fluid, natural, and conversational.
-Do not use log formats ("human", "assistant"), remove all that.
-Maintain a bulleted list format, one memory per line.
-The raw memories include fuzzy relative timestamps like [hace 2 semanas] or [yesterday morning]. Incorporate them naturally into each sentence rather than keeping them as bracketed labels.
 
-STRICT RULES — NEVER break these:
-1. Do NOT invent or infer ANY fact, action, method, or context that is not EXPLICITLY stated in the RAW MEMORIES below.
-2. Do NOT add sensory details like "I heard", "I saw", "I felt" unless that is literally written in the source.
-3. If the source says "the user spoke on the phone", write "the user spoke on the phone" — do NOT say "I heard you speak on the phone" as that implies the AI was present.
-4. Only rephrase style and point-of-view (1st person). Keep ALL facts strictly sourced from the raw text.
-5. When uncertain, stay closer to the original wording rather than embellishing.
-${soulContext ? `\n=== YOUR UNIQUE PERSONA (SOUL) ===\n${soulContext}\n=========================\nYou MUST write these memories adopting this personality, tone, and worldview.\n` : ""}${storyContext ? `\n=== YOUR ONGOING NARRATIVE (STORY) ===\n${storyContext}\n=========================\nUse this as background context to better understand the relationship and history with the user.\n` : ""}
+FORMATTING RULES:
+1. Preserve the grouping header: "${groupHeader}" but translate the header into a natural transition, like "${displayQuery} reminds me that..." or "Thinking about ${displayQuery}, I remember...".
+2. Under the header, rewrite the memories as a bulleted list format, one memory per line.
+3. The raw memories include fuzzy relative timestamps like [hace 2 semanas] or [yesterday morning]. Incorporate them naturally into each sentence rather than keeping them as bracketed labels.
+
+AS SUBCONCIOUS AI, FOLLOW THESE STRICT CONTENT RULES — NEVER break these:
+1. DO NOT REPLY TO THE USER. DO NOT ADD CONVERSATIONAL RESPONSES. ONLY OUTPUT THE HEADER AND THE BULLETED MEMORIES.
+2. Do NOT invent or infer ANY fact, action, method, or context that is not EXPLICITLY stated in the RAW MEMORIES below.
+3. Do NOT add sensory details like "I heard", "I saw", "I felt" unless that is literally written in the source.
+4. If the source says "the user spoke", write "the user spoke" — do NOT say "I heard you speak".
+5. Only rephrase style and point-of-view (1st person). Keep ALL facts strictly sourced from the raw text.
+
+${soulContext ? `\n=== YOUR UNIQUE PERSONA (SOUL) ===\n${soulContext}\n` : ""}${storyContext ? `\n=== YOUR ONGOING NARRATIVE (STORY) ===\n${storyContext}\n` : ""}
 CURRENT USER MESSAGE (Detect language from this):
 "${currentPrompt}"
 
 RAW MEMORIES:
-${finalLines.join("\n")}`;
+${groupLines.join("\n")}`;
 
-      const res = await agent.complete(translationPrompt);
-      if (res.text && res.text.trim().length > 0) {
-        // Remove hallucinatory intros like "Aquí están tus recuerdos:"
-        rewrittenLines = res.text
-          .split("\n")
-          .filter(l => l.trim().startsWith("-") || l.trim().startsWith("•"))
-          .join("\n");
-          
-        if (rewrittenLines.length === 0) {
-           // fallback if it didn't use bullet points
-           rewrittenLines = res.text.trim();
+          try {
+            const res = await agent.complete(translationPrompt);
+            if (res.text?.trim()) {
+              // Strictly keep ONLY lines that are headers or list items
+              return res.text
+                .split("\n")
+                .filter((l) => {
+                  const trimmed = l.trim();
+                  return (
+                    trimmed.startsWith("-") ||
+                    trimmed.startsWith("*") ||
+                    trimmed.startsWith("•") ||
+                    trimmed.startsWith("---") ||
+                    trimmed.toLowerCase().includes("reminds me") ||
+                    trimmed.toLowerCase().includes("recuerda que")
+                  );
+                })
+                .join("\n");
+            }
+          } catch (e) {
+            this.log(`  ❌ [MIND] Error rewriting group "${displayQuery}": ${String(e)}`);
+          }
+
+          // Fallback to raw lines if LLM fails
+          return groupLines.join("\n");
+        },
+      );
+
+      const rewrittenGroups = await Promise.all(rewritePromises);
+      rewrittenLines = rewrittenGroups.filter((text) => text.trim().length > 0).join("\n\n");
+      this.log(`  ✅ [MIND] Parallel rewriting completed successfully.`);
+    } else {
+      // Deterministic Fallback if LLM rewriting is disabled
+      this.log(`  ⚡ [MIND] Rewriting disabled. Using programmatic fast-formatting...`);
+      const rawLines: string[] = [];
+      for (const [query, memories] of groupedMemories.entries()) {
+        // 1. Clean up the query string
+        let displayQuery = query;
+        const match = query.match(/\((.*?)\)/);
+        if (match && match[1]) {
+          displayQuery = match[1].replace(/\.\.\.$/, "");
         }
-        this.log(`  ✅ [MIND] Rewritten successfully.`);
+
+        // 2. Natural programmatic transition
+        rawLines.push(`---`);
+        rawLines.push(`* Thinking about "${displayQuery}" reminds me that:`);
+
+        // 3. Chronological sorting
+        memories.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+        // 4. Formatting bullets with relative time
+        for (const m of memories) {
+          if (m.isFact) {
+            this.log(`  ✨ [FINAL] Adding Fact to Resonance: "${m.content.substring(0, 60)}..."`);
+          }
+          rawLines.push(`  - [${m.relativeTime}] ${m.content}`);
+        }
       }
+      rewrittenLines = rawLines.join("\n");
     }
+    const t_rewrite = performance.now() - t2;
+    const totalTime = performance.now() - startTime;
 
-    const finalFlashback = `
----
-[SUBCONSCIOUS RESONANCE]
-${rewrittenLines}
----
-`;
+    const finalResonance = `\n---\n[SUBCONSCIOUS RESONANCE]\n${rewrittenLines}\n---\n`;
 
-    // Only log the final resonance block if debug is on
-    if (this.debug) {
-      this.log(`\n ================================================ `);
-      this.log(`🧠[MIND] DRIFTING INTO RESONANCE: \n${finalFlashback} `);
-      this.log(`================================================\n`);
-    }
+    // Always log the final resonance block for visibility
+    process.stderr.write(`\n ================================================ `);
+    process.stderr.write(`\n🧠 [MIND] DRIFTING INTO RESONANCE: \n${finalResonance} `);
+    process.stderr.write(
+      `⏱️  [LATENCY] Total: ${totalTime.toFixed(0)}ms (Queries: ${t_queries.toFixed(0)}ms, Search: ${t_search.toFixed(0)}ms, Rewrite: ${t_rewrite.toFixed(0)}ms)\n`,
+    );
+    process.stderr.write(`================================================\n`);
 
-    return finalFlashback;
+    return finalResonance;
   }
 }

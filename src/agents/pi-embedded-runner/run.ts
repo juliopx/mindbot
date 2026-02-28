@@ -64,12 +64,12 @@ type ApiKeyInfo = ResolvedProviderAuth;
 
 type MindMemoryPluginConfig = {
   debug?: boolean;
-  graphiti?: { baseUrl?: string; model?: string; rewriteMemories?: boolean };
+  graphiti?: { baseUrl?: string; model?: string; rewriteMemories?: boolean; thinking?: string };
   narrative?: {
     enabled?: boolean;
-    provider?: string;
     model?: string;
     autoBootstrapHistory?: boolean;
+    thinking?: string;
   };
 };
 
@@ -623,8 +623,10 @@ export async function runEmbeddedPiAgent(
               } | null = null;
 
               // Resolve narrative model from config or fallback to chat model (hoisted for use in flashback)
-              const narrativeProvider = mindConfig?.config?.narrative?.provider || params.provider;
-              const narrativeModel = mindConfig?.config?.narrative?.model || params.model;
+              const narrativeModelStr = mindConfig?.config?.narrative?.model;
+              const [narrativeProvider, narrativeModel] = narrativeModelStr?.includes("/")
+                ? narrativeModelStr.split("/")
+                : [params.provider, narrativeModelStr ?? params.model];
 
               // 2. Global narrative sync (sync old sessions to STORY.md)
               try {
@@ -644,11 +646,9 @@ export async function runEmbeddedPiAgent(
                   }
 
                   const { resolveModel } = await import("./model.js");
-                  const narrativeProviderParam = narrativeProvider || params.provider || "";
-                  const narrativeModelParam = narrativeModel || params.model || "";
                   const resolved = resolveModel(
-                    narrativeProviderParam,
-                    narrativeModelParam,
+                    narrativeProvider || params.provider || "",
+                    narrativeModel || params.model || "",
                     params.agentDir ?? resolveOpenClawAgentDir(),
                     params.config,
                   );
@@ -676,6 +676,8 @@ export async function runEmbeddedPiAgent(
                   autoBootstrapHistory:
                     mindConfig?.config?.narrative?.autoBootstrapHistory ?? false,
                   fallbacks: params.config?.agents?.defaults?.model?.fallbacks,
+                  reasoning: (mindConfig?.config?.narrative?.thinking ??
+                    "low") as import("@mariozechner/pi-ai").ThinkingLevel,
                 });
 
                 await cons.syncGlobalNarrative(
@@ -749,6 +751,9 @@ export async function runEmbeddedPiAgent(
                         debug,
                         autoBootstrapHistory: false,
                         fallbacks: params.config?.agents?.defaults?.model?.fallbacks,
+                        reasoning: mindConfig?.config?.graphiti?.thinking as
+                          | import("@mariozechner/pi-ai").ThinkingLevel
+                          | undefined,
                       });
                       if (debug) {
                         process.stderr.write(
@@ -917,9 +922,10 @@ export async function runEmbeddedPiAgent(
                         const safeTokenLimit = Math.floor((ctxInfo.tokens || 50000) * 0.5);
 
                         // Resolve narrative model from config or fallback to chat model
-                        const narrativeProvider =
-                          mindConfig?.config?.narrative?.provider || params.provider;
-                        const narrativeModel = mindConfig?.config?.narrative?.model || params.model;
+                        const narrativeModelStr = mindConfig?.config?.narrative?.model;
+                        const [narrativeProvider, narrativeModel] = narrativeModelStr?.includes("/")
+                          ? narrativeModelStr.split("/")
+                          : [params.provider, narrativeModelStr ?? params.model];
 
                         let narrativeLLM = model;
 
@@ -965,6 +971,8 @@ export async function runEmbeddedPiAgent(
                           debug,
                           autoBootstrapHistory:
                             mindConfig?.config?.narrative?.autoBootstrapHistory ?? false,
+                          reasoning: (mindConfig?.config?.narrative?.thinking ??
+                            "low") as import("@mariozechner/pi-ai").ThinkingLevel,
                         });
 
                         const { retryAsync } = await import("../../infra/retry.js");

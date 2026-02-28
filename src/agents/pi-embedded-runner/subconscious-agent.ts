@@ -5,7 +5,13 @@
  * the configured model, with error-event detection and Copilot failover.
  */
 
-import { streamSimple, type Model, type Api, type Context } from "@mariozechner/pi-ai";
+import {
+  streamSimple,
+  type Model,
+  type Api,
+  type Context,
+  type ThinkingLevel,
+} from "@mariozechner/pi-ai";
 import type { AuthStorage, ModelRegistry } from "../pi-model-discovery.js";
 
 export interface SubconsciousAgent {
@@ -20,6 +26,7 @@ export interface SubconsciousAgentOptions {
   debug?: boolean;
   autoBootstrapHistory?: boolean;
   fallbacks?: string[];
+  reasoning?: ThinkingLevel;
 }
 
 interface StreamResult {
@@ -137,6 +144,7 @@ export function createSubconsciousAgent(opts: SubconsciousAgentOptions): Subcons
           {
             apiKey: key,
             maxTokens: 16000,
+            ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
             onPayload: (payload: unknown) => {
               if (payload && typeof payload === "object") {
                 const p = payload as Record<string, unknown>;
@@ -192,6 +200,7 @@ export function createSubconsciousAgent(opts: SubconsciousAgentOptions): Subcons
               {
                 apiKey: failoverKey,
                 maxTokens: 16000,
+                ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
                 onPayload: (payload: unknown) => {
                   if (payload && typeof payload === "object") {
                     const p = payload as Record<string, unknown>;

@@ -627,10 +627,14 @@ export async function compactEmbeddedPiSessionDirect(
             debug?: boolean;
             graphiti?: {
               baseUrl?: string;
+              model?: string;
+              thinking?: string;
             };
             narrative?: {
               enabled?: boolean;
               autoBootstrapHistory?: boolean;
+              model?: string;
+              thinking?: string;
             };
           };
         };
@@ -644,12 +648,44 @@ export async function compactEmbeddedPiSessionDirect(
         if (isMindEnabled) {
           try {
             const { createSubconsciousAgent } = await import("./subconscious-agent.js");
+
+            // Resolve narrative model from config or fallback to chat model
+            let narrativeLLM = model;
+            const narrativeModelStr = mindConfig?.config?.narrative?.model;
+            if (narrativeModelStr) {
+              const [nProvider, nModel] = narrativeModelStr.includes("/")
+                ? narrativeModelStr.split("/")
+                : [provider, narrativeModelStr];
+              const { resolveModel } = await import("./model.js");
+              const { resolveOpenClawAgentDir } = await import("../agent-paths.js");
+              const resolved = resolveModel(
+                nProvider ?? provider,
+                nModel ?? modelId,
+                resolveOpenClawAgentDir(),
+                params.config,
+              );
+              if (resolved.model) {
+                narrativeLLM = resolved.model;
+                if (mindDebug) {
+                  process.stderr.write(
+                    `🎨 [MIND] Compact uses narrative model: ${nProvider}/${nModel}\n`,
+                  );
+                }
+              } else if (mindDebug) {
+                process.stderr.write(
+                  `⚠️ [MIND] Could not resolve narrative model for compact: ${resolved.error}. Using chat model.\n`,
+                );
+              }
+            }
+
             const subconsciousAgent = createSubconsciousAgent({
-              model,
+              model: narrativeLLM,
               authStorage,
               modelRegistry,
               debug: mindDebug,
               autoBootstrapHistory: mindConfig?.config?.narrative?.autoBootstrapHistory ?? false,
+              reasoning: (mindConfig?.config?.narrative?.thinking ??
+                "low") as import("@mariozechner/pi-ai").ThinkingLevel,
             });
             const { GraphService } = await import("../../services/memory/GraphService.js");
             const { ConsolidationService } =

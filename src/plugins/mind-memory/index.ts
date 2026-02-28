@@ -21,12 +21,13 @@ type MindMemoryPluginConfig = {
     baseUrl?: string;
     rewriteMemories?: boolean;
     model?: string;
+    thinking?: string;
   };
   narrative?: {
     enabled?: boolean;
     autoBootstrapStory?: boolean;
-    provider?: string;
     model?: string;
+    thinking?: string;
   };
 };
 
@@ -201,6 +202,9 @@ export default function register(api: PluginApi) {
               debug,
               autoBootstrapHistory: false,
               fallbacks: api.config.agents?.defaults?.model?.fallbacks,
+              reasoning: config.graphiti?.thinking as
+                | import("@mariozechner/pi-ai").ThinkingLevel
+                | undefined,
             });
           }
         } catch (err) {
@@ -386,6 +390,8 @@ export default function register(api: PluginApi) {
           modelRegistry,
           debug,
           autoBootstrapHistory: false,
+          reasoning: (config.narrative?.thinking ??
+            "low") as import("@mariozechner/pi-ai").ThinkingLevel,
         });
 
         // Map the raw hook messages to the shape syncStoryWithSession expects.
